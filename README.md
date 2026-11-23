@@ -36,12 +36,32 @@ Settings → *Restart journey* wipes the save.
 | Central forest | **Veil-Mothers** hunt light and follow sound; **Gloom-Moths** drain the lantern | **Pressure plates**: lure two Veil-Mothers with staff sounds; the arch lifts |
 | North woods + shrine | **Bell-Warden**: blind, hunts by sound; **sunbeams** burn as the fog thins | **Four beacons**: place the 4 ember cores, then run for the rising gate |
 
+**Old notes:** seven standing stones with a paper tied round them sit beside the trails, each one
+just before the puzzle it explains (`STONES` in `story.js`). Walking up to one unfolds its note
+and pauses the glade. Read stones re-open with the staff, and unread ones show a `?` in Scorched Sight.
+
 Endings: **The White Burn** (escape through the gate) and **The Smothered Flame** (secret: holding
 3+ cores, shutter your lantern and stand still beside a Veil-Mother for 12 s).
 
 Code map: `story.js` (layout, texts, items), `gameplay.js` (rules, flame, puzzles, save, endings,
 Scorched Sight marks), `monsters.js`, `props.js`, `audio.js` (all sound is synthesised in the
 browser: no audio files), `world.js`, `shaders.js`, `ascii.js`.
+
+## The look
+
+The default view is painted autumn: a low warm sun behind the trees, blue-teal mist, maples, white
+star-flowers, leaves falling and floating on the lake, and soft god-rays. Every piece of it is
+generated in code and instanced, so it costs about as much as the old look:
+
+* **Stone** (boulders, pillars, arch, flagstones, rune stones) gets procedural cracks, chips and
+  weathering in the shader (`stoneDetail` in `shaders.js`). It uses no textures.
+* **Highlights:** sunlit upper faces warm up, and the low sun rims every silhouette.
+* **Monsters** follow the concept sheet: faceted dark slate bodies with ember eyes. Ash, shards and
+  motes are baked into each mesh and drift with the sway shader, so they add no extra draw calls.
+  The **Mire Lurker** is drawn only into the lake's reflection.
+* **Performance:** uncapped frame time is about 1 ms on a laptop at every quality level, and about
+  4 to 5.5 ms at phone resolution with the CPU throttled 4x. The browser still caps the shown frame
+  rate at the screen's refresh rate.
 
 ## Loading and fullscreen
 

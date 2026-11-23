@@ -6,11 +6,11 @@
 
 export const LEVELS = [
   // 0 "potato": old / low-end phones
-  { name: 'potato', dpr: 2.0, nd: 0.6, ss: 1, refl: 0, grass: 0.0, fireflies: 40, drawDistance: 30, fog: [4, 25], blur: 0 },
-  { name: 'low', dpr: 2.5, nd: 0.8, ss: 1, refl: 0, grass: 0.4, fireflies: 90, drawDistance: 34, fog: [5, 28], blur: 0 },
-  { name: 'medium', dpr: 3.0, nd: 1.0, ss: 1, refl: 0.5, grass: 0.7, fireflies: 160, drawDistance: 38, fog: [6, 32], blur: 0.004 },
-  { name: 'high', dpr: 3.0, nd: 1.5, ss: 2, refl: 0.5, grass: 1.0, fireflies: 260, drawDistance: 44, fog: [7, 37], blur: 0.006 },
-  { name: 'ultra', dpr: 3.0, nd: 2.0, ss: 2, refl: 1.0, grass: 1.0, fireflies: 400, drawDistance: 50, fog: [8, 42], blur: 0.007 },
+  { name: 'potato', dpr: 2.0, nd: 0.6, ss: 1, refl: 0, grass: 0.0, fireflies: 40, drawDistance: 34, fog: [8, 32], blur: 0 },
+  { name: 'low', dpr: 2.5, nd: 0.8, ss: 1, refl: 0, grass: 0.4, fireflies: 90, drawDistance: 38, fog: [9, 36], blur: 0 },
+  { name: 'medium', dpr: 3.0, nd: 1.0, ss: 1, refl: 0.5, grass: 0.7, fireflies: 160, drawDistance: 42, fog: [10, 40], blur: 0.004 },
+  { name: 'high', dpr: 3.0, nd: 1.5, ss: 2, refl: 0.5, grass: 1.0, fireflies: 260, drawDistance: 48, fog: [11, 46], blur: 0.006 },
+  { name: 'ultra', dpr: 3.0, nd: 2.0, ss: 2, refl: 1.0, grass: 1.0, fireflies: 400, drawDistance: 54, fog: [12, 52], blur: 0.007 },
 ];
 
 export function isMobile() {

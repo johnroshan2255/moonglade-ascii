@@ -13,9 +13,12 @@
 
 import * as pc from 'playcanvas';
 import { CLS, worldMaterial, waterMaterial, instanceFormat } from './shaders.js';
-import { MeshBuilder, rgba, addBox, pineMesh, roundTreeMesh, deadTreeMesh, rockMesh, grassTuftMesh, fireflyMesh, thornMesh } from './meshes.js';
+import { MeshBuilder, rgba, addBox, pineMesh, roundTreeMesh, deadTreeMesh, rockMesh, grassTuftMesh, fireflyMesh, thornMesh, mapleMesh, flowerMesh, leafMesh } from './meshes.js';
 import { fbm, mulberry32, smoothstep, lerp, clamp, distToSegment, hash2 } from './noise.js';
-import { LAYOUT, PATHS } from './story.js';
+import { LAYOUT, PATHS, STONES } from './story.js';
+
+/** Direction TO the low autumn sun (north-west, behind the usual camera view: the glade is backlit). */
+export const SUN_DIR = (() => { const v = [-0.5, 0.5, -0.71]; const l = Math.hypot(...v); return v.map((c) => c / l); })();
 
 export const WORLD = {
   half: 80, // world spans -80..80
@@ -182,7 +185,11 @@ export class World {
       rocks: worldMaterial({ inst: true }),
       grass: worldMaterial({ inst: true, push: true, sway: 0.35, doubleSided: true }),
       ruins: worldMaterial({}),
-      fireflies: worldMaterial({ inst: true, fly: true, emissive: 0.9 }),
+      fireflies: worldMaterial({ inst: true, fly: true, emissive: 1.4 }),
+      flowers: worldMaterial({ inst: true, sway: 0.25, emissive: 0.45 }),
+      leaves: worldMaterial({ inst: true }),
+      falling: worldMaterial({ inst: true, fall: true, doubleSided: true }),
+      shafts: worldMaterial({ emissive: 1.0, additive: true }),
       water: waterMaterial(),
     };
   }
@@ -198,6 +205,7 @@ export class World {
       ['growing tall grass', () => this.buildGrass()],
       ['restoring the shrine', () => this.buildRuins()],
       ['stirring the dust', () => this.buildFireflies()],
+      ['scattering autumn leaves', () => this.buildAutumn()],
     ];
   }
 
@@ -209,6 +217,8 @@ export class World {
     }
     this.fireflies.mi.visible = true;
     this.fireflies.mi.instancingCount = this.fireflies.max;
+    this.falling.mi.visible = true;
+    this.falling.mi.instancingCount = this.falling.max;
   }
 
   height(x, z) { return this.hf.at(x, z); }
@@ -294,6 +304,7 @@ export class World {
     if (L.plates.some((c) => near(c, 5))) return true;
     if (near({ x: L.wallC.archX, z: L.wallC.z }, 6) || near({ x: L.wallA.gateX, z: L.wallA.z }, 5)) return true;
     if (near(L.ironChime, 4) || near(L.exitGate, 8)) return true;
+    if (STONES.some((s) => near(s, 2.6))) return true;
     if (distToSegment(x, z, L.shrine.x, L.shrine.z, L.exitGate.x - 6, L.exitGate.z - 6) < 5) return true;
     return false;
   }
@@ -324,18 +335,21 @@ export class World {
     if (h < WORLD.waterY + 0.35) {
       // muddy shore / lake bed
       const t = clamp((h - WORLD.waterY + 1.8) / 2.2, 0, 1);
-      return rgba(0.1 + t * 0.06, 0.09 + t * 0.05, 0.065 + t * 0.03, CLS.GROUND); // dark lake mud
+      return rgba(0.12 + t * 0.08, 0.12 + t * 0.07, 0.09 + t * 0.04, CLS.GROUND); // dark lake mud
     }
     if (ds < 12.5) {
       // flagstones
       const tile = hash2(Math.floor(x * 0.7), Math.floor(z * 0.7));
-      const g = 0.2 + tile * 0.08;
-      return rgba(g * 0.95, g, g * 0.93, CLS.STONE); // mossy flagstones
+      const g = 0.3 + tile * 0.1;
+      return rgba(g * 0.94, g, g * 0.92, CLS.STONE); // mossy flagstones
     }
-    if (pd < 1.6 + v) return rgba(0.22 + v * 0.06, 0.17 + v * 0.05, 0.11, CLS.GROUND); // damp brown earth
-    if (ny < 0.72) return rgba(0.17 + v * 0.06, 0.18 + v * 0.06, 0.18 + v * 0.06, CLS.STONE);
-    if (this.meadow(x, z) > 0.44) return rgba(0.09 + v * 0.05, 0.13 + v * 0.07, 0.055 + v * 0.03, CLS.GRASS); // olive meadow
-    return rgba(0.11 + v * 0.05, 0.12 + v * 0.06, 0.075 + v * 0.03, CLS.GROUND);
+    const litter = hash2(Math.floor(x), Math.floor(z)) > 0.88 ? 0.18 : 0; // a hint of leaf-stained earth
+    const leaf = (r, g, b) => [r + (0.52 - r) * litter, g + (0.24 - g) * litter, b + (0.07 - b) * litter];
+    if (pd < 1.6 + v) { const c = leaf(0.3 + v * 0.06, 0.25 + v * 0.05, 0.18); return rgba(c[0], c[1], c[2], CLS.GROUND); } // earth trail
+    if (ny < 0.72) return rgba(0.28 + v * 0.06, 0.28 + v * 0.06, 0.27 + v * 0.06, CLS.STONE);
+    if (this.meadow(x, z) > 0.38) return rgba(0.13 + v * 0.05, 0.22 + v * 0.07, 0.08 + v * 0.03, CLS.GRASS); // meadow
+    const c = leaf(0.15 + v * 0.05, 0.21 + v * 0.06, 0.08 + v * 0.03);
+    return rgba(c[0], c[1], c[2], CLS.GROUND); // mossy forest floor
   }
 
   buildTerrain() {
@@ -410,7 +424,10 @@ export class World {
     const rng = mulberry32(1234);
     const size = 32;
     const chunks = (WORLD.half * 2) / size;
-    const meshes = { pine: pineMesh(this.device), round: roundTreeMesh(this.device), dead: deadTreeMesh(this.device, 31), dead2: deadTreeMesh(this.device, 77), rock: rockMesh(this.device) };
+    const meshes = {
+      pine: pineMesh(this.device), round: roundTreeMesh(this.device), dead: deadTreeMesh(this.device, 31), dead2: deadTreeMesh(this.device, 77), rock: rockMesh(this.device),
+      maple0: mapleMesh(this.device, 41, 0), maple1: mapleMesh(this.device, 87, 1), maple2: mapleMesh(this.device, 133, 2),
+    };
     const buckets = new Map();
     this.bucketAdd = (kind, x, ...rest) => {
       const z = rest[1];
@@ -418,7 +435,7 @@ export class World {
       const cz = clamp(Math.floor((z + WORLD.half) / size), 0, chunks - 1);
       const k = cz * chunks + cx;
       let b = buckets.get(k);
-      if (!b) buckets.set(k, (b = { pine: [], round: [], dead: [], dead2: [], rock: [], thorn: [] }));
+      if (!b) buckets.set(k, (b = { pine: [], round: [], dead: [], dead2: [], rock: [], thorn: [], maple0: [], maple1: [], maple2: [] }));
       b[kind].push(x, ...rest);
     };
     this.propBuckets = buckets;
@@ -440,7 +457,7 @@ export class World {
       const density = 0.18 + smoothstep(30, 62, r) * 0.7 + (fbm(x * 0.04, z * 0.04, 2) - 0.5) * 0.6;
       if (rng() > density) continue;
       const roll = rng();
-      const kind = roll < 0.34 ? 'dead' : roll < 0.68 ? 'dead2' : roll < 0.95 ? 'pine' : 'round';
+      const kind = roll < 0.3 ? 'maple0' : roll < 0.48 ? 'maple1' : roll < 0.62 ? 'maple2' : roll < 0.9 ? 'pine' : roll < 0.95 ? 'dead' : 'dead2';
       const bare = kind === 'dead' || kind === 'dead2';
       // the world is built too big for its wanderer
       const s = (1.2 + rng() * 0.8 + smoothstep(50, 75, r) * 0.6) * (bare ? 1.0 : 1.1);
@@ -490,7 +507,9 @@ export class World {
         // every few metres a big dead tree so the wall reads from far away
         if (rng() < 0.22) {
           const tx = x + (rng() - 0.5) * 2, tz = z + (rng() - 0.5) * 2;
-          this.bucketAdd(rng() < 0.5 ? 'dead' : 'dead2', tx, this.hf.at(tx, tz) - 0.1, tz, 1.3 + rng() * 0.7, rng() * Math.PI * 2, 0.8 + rng() * 0.3, rng(), 0);
+          const r = rng();
+          const kind = r < 0.45 ? 'pine' : r < 0.7 ? 'maple0' : r < 0.85 ? 'maple1' : 'maple2';
+          this.bucketAdd(kind, tx, this.hf.at(tx, tz) - 0.1, tz, 1.4 + rng() * 0.7, rng() * Math.PI * 2, 0.8 + rng() * 0.3, rng(), 0);
         }
       }
     }
@@ -508,15 +527,15 @@ export class World {
 
   flushProps() {
     const worldMis = [], reflMis = [];
-    const heights = { pine: 4.6, round: 4.2, dead: 10, dead2: 10, rock: 1.0, thorn: 1.8 };
+    const heights = { pine: 4.6, round: 4.2, dead: 10, dead2: 10, rock: 1.0, thorn: 1.8, maple0: 5.4, maple1: 5.4, maple2: 5.4 };
     for (const b of this.propBuckets.values()) {
-      for (const kind of ['pine', 'round', 'dead', 'dead2', 'rock', 'thorn']) {
+      for (const kind of ['pine', 'round', 'dead', 'dead2', 'rock', 'thorn', 'maple0', 'maple1', 'maple2']) {
         const arr = b[kind];
         if (!arr.length) continue;
         const count = arr.length / 8;
         let minX = 1e9, minY = 1e9, minZ = 1e9, maxX = -1e9, maxY = -1e9, maxZ = -1e9;
         for (let i = 0; i < arr.length; i += 8) {
-          const s = arr[i + 3], m = (kind === 'dead' || kind === 'dead2' ? 4.2 : 1.6) * s;
+          const s = arr[i + 3], m = (kind === 'dead' || kind === 'dead2' ? 4.2 : kind.startsWith('maple') ? 2.8 : 1.6) * s;
           minX = Math.min(minX, arr[i] - m); maxX = Math.max(maxX, arr[i] + m);
           minZ = Math.min(minZ, arr[i + 2] - m); maxZ = Math.max(maxZ, arr[i + 2] + m);
           minY = Math.min(minY, arr[i + 1]); maxY = Math.max(maxY, arr[i + 1] + heights[kind] * s);
@@ -554,7 +573,7 @@ export class World {
         for (let i = 0; i < tries; i++) {
           const x = x0 + rng() * size, z = z0 + rng() * size;
           const patch = this.meadow(x, z);
-          if (patch < 0.48) continue;
+          if (patch < 0.42) continue;
           if (pathDist(x, z) < 1.6) continue;
           if (this.nearPond(x, z, 0.5)) continue;
           if (Math.hypot(x - WORLD.shrine.x, z - WORLD.shrine.z) < 13) continue;
@@ -589,7 +608,8 @@ export class World {
     const { x: sx, z: sz } = WORLD.shrine;
     const y0 = SHRINE_H;
     const mb = new MeshBuilder();
-    const stone = (v) => rgba(0.27 + v, 0.29 + v, 0.26 + v, CLS.STONE); // moss-stained
+    const stone = (v) => rgba(0.36 + v, 0.37 + v, 0.34 + v, CLS.STONE); // weathered, moss-stained
+    const moss = (v) => rgba(0.26 + v, 0.34 + v, 0.12, CLS.STONE);
     this.pillars = []; // strike targets
 
     // ring of pillars, some broken, two fallen; pillar 4 (west) is broken so an ember hides behind it
@@ -603,8 +623,27 @@ export class World {
         addBox(mb, { x: x + Math.cos(a) * 1.4, y: y0 + 0.4, z: z + Math.sin(a) * 1.4, sx: 0.8, sy: 3.2, sz: 0.8, rot: -a + Math.PI / 2, tilt: Math.PI / 2 - 0.08, col: stone(-0.06) });
         this.colliders.add(x + Math.cos(a) * 1.4, z + Math.sin(a) * 1.4, 1.4);
       } else {
-        addBox(mb, { x, y: y0 + h / 2 - 0.1, z, sx: 0.85, sy: h, sz: 0.85, rot: -a, col: (t) => stone(t * 0.08 - 0.04) });
-        if (!broken) addBox(mb, { x, y: y0 + h + 0.12, z, sx: 1.2, sy: 0.3, sz: 1.2, rot: -a, col: stone(0.04) });
+        // stacked drums, each a little twisted and offset: the seams read as old masonry
+        const base = y0 - 0.1;
+        addBox(mb, { x, y: base + 0.18, z, sx: 1.15, sy: 0.36, sz: 1.15, rot: -a, col: stone(-0.05) });
+        let yy = base + 0.36;
+        while (yy < base + h - 0.05) {
+          const dh = Math.min(0.7 + rng() * 0.35, base + h - yy);
+          addBox(mb, { x: x + (rng() - 0.5) * 0.06, y: yy + dh / 2, z: z + (rng() - 0.5) * 0.06, sx: 0.84, sy: dh - 0.03, sz: 0.84, rot: -a + (rng() - 0.5) * 0.12, col: stone(-0.02 + rng() * 0.06) });
+          yy += dh;
+        }
+        if (!broken) {
+          addBox(mb, { x, y: y0 + h + 0.12, z, sx: 1.2, sy: 0.3, sz: 1.2, rot: -a, col: stone(0.04) });
+          addBox(mb, { x, y: y0 + h + 0.29, z, sx: 1.0, sy: 0.05, sz: 1.0, rot: -a, col: moss(0) });
+        } else {
+          // a sheared, chipped top and the broken-off pieces lying around the foot
+          addBox(mb, { x: x + 0.1, y: y0 + h + 0.05, z, sx: 0.6, sy: 0.3, sz: 0.55, rot: -a + 0.5, tilt: 0.45, col: stone(0.05) });
+          addBox(mb, { x: x - 0.18, y: y0 + h - 0.02, z: z + 0.12, sx: 0.4, sy: 0.22, sz: 0.4, rot: -a - 0.3, tilt: -0.3, col: moss(-0.02) });
+          for (let k = 0; k < 4; k++) {
+            const ra = rng() * Math.PI * 2, rd = 0.8 + rng() * 0.9, rs = 0.22 + rng() * 0.25;
+            addBox(mb, { x: x + Math.cos(ra) * rd, y: y0 + rs * 0.35, z: z + Math.sin(ra) * rd, sx: rs * 1.3, sy: rs, sz: rs, rot: rng() * 6.28, tilt: (rng() - 0.5) * 0.8, col: rng() < 0.4 ? moss(-0.03) : stone(-0.02 + rng() * 0.05) });
+          }
+        }
         this.colliders.add(x, z, 0.7);
         this.pillars.push([x, z]);
       }
@@ -646,6 +685,144 @@ export class World {
     this.addEntity('fireflies', [mi], true);
   }
 
+  // --------------------------------------------------------------- autumn: flowers, leaves on the pond, falling leaves, light shafts
+  buildAutumn() {
+    const rng = mulberry32(2024);
+    const size = 16;
+    const chunks = (WORLD.half * 2) / size;
+
+    // white star-flower clumps: along the pond shore, the meadows and the trails (LOD-thinned like grass)
+    const fl = flowerMesh(this.device);
+    const byChunk = new Map();
+    const put = (x, z) => {
+      const h = this.hf.at(x, z);
+      if (h < WORLD.waterY + 0.15 || this.hf.normalY(x, z) < 0.8 || this.clearZone(x, z) || pathDist(x, z) < 1.0) return;
+      const k = Math.floor((z + WORLD.half) / size) * chunks + Math.floor((x + WORLD.half) / size);
+      let a = byChunk.get(k);
+      if (!a) byChunk.set(k, (a = []));
+      a.push([x, h - 0.03, z, 0.85 + rng() * 0.5, rng() * Math.PI * 2, 0.85 + rng() * 0.3, rng(), 0]);
+    };
+    for (let c = 0; c < 110; c++) {
+      let cx, cz;
+      const roll = rng();
+      if (roll < 0.35) { const a = rng() * Math.PI * 2, d = WORLD.pond.r + 0.5 + rng() * 3; cx = WORLD.pond.x + Math.cos(a) * d; cz = WORLD.pond.z + Math.sin(a) * d; }
+      else if (roll < 0.7) { const p = PATHS[Math.floor(rng() * PATHS.length)]; const q = p[Math.floor(rng() * p.length)]; cx = q[0] + (rng() - 0.5) * 7; cz = q[1] + (rng() - 0.5) * 7; }
+      else { cx = (rng() * 2 - 1) * 60; cz = (rng() * 2 - 1) * 60; if (this.meadow(cx, cz) < 0.4) continue; }
+      const n = 3 + Math.floor(rng() * 6);
+      for (let i = 0; i < n; i++) put(cx + (rng() - 0.5) * 2.4, cz + (rng() - 0.5) * 2.4);
+    }
+    const flowerMis = [];
+    for (const [k, pts] of byChunk) {
+      const x0 = -WORLD.half + (k % chunks) * size, z0 = -WORLD.half + Math.floor(k / chunks) * size;
+      const data = new Float32Array(pts.length * 8);
+      pts.forEach((p, i) => data.set(p, i * 8));
+      const aabb = new pc.BoundingBox();
+      aabb.setMinMax(new pc.Vec3(x0 - 1, -3, z0 - 1), new pc.Vec3(x0 + size + 1, 12, z0 + size + 1));
+      const mi = this.makeInstanced(fl, this.mats.flowers, data, pts.length, aabb);
+      flowerMis.push(mi);
+      this.clusters.push({ mi, x: x0 + size / 2, z: z0 + size / 2, radius: size * 0.71, base: pts.length, kind: 'grass' });
+    }
+    if (flowerMis.length) this.addEntity('flowers', flowerMis, false);
+
+    // fallen leaves on the forest floor, in drifts (instanced, LOD-thinned like grass)
+    const ground = new Map();
+    for (let i = 0; i < 5200; i++) {
+      const x = (rng() * 2 - 1) * 70, z = (rng() * 2 - 1) * 70;
+      const h = this.hf.at(x, z);
+      if (h < WORLD.waterY + 0.1 || Math.hypot(x - WORLD.shrine.x, z - WORLD.shrine.z) < 12) continue;
+      if (fbm(x * 0.09 + 5, z * 0.09 - 3, 2) < 0.45) continue;
+      const k = Math.floor((z + WORLD.half) / size) * chunks + Math.floor((x + WORLD.half) / size);
+      let a = ground.get(k);
+      if (!a) ground.set(k, (a = [[], [], []]));
+      a[i % 3].push(x, h + 0.025, z, 0.9 + rng() * 0.7, rng() * Math.PI * 2, 0.7 + rng() * 0.35, rng(), 0);
+    }
+    const groundLeafMeshes = [[0.86, 0.38, 0.09], [0.7, 0.2, 0.07], [0.92, 0.62, 0.16]].map((c) => leafMesh(this.device, c));
+    const groundMis = [];
+    for (const [k, sets] of ground) {
+      const x0 = -WORLD.half + (k % chunks) * size, z0 = -WORLD.half + Math.floor(k / chunks) * size;
+      sets.forEach((arr, j) => {
+        if (!arr.length) return;
+        const aabb = new pc.BoundingBox();
+        aabb.setMinMax(new pc.Vec3(x0 - 1, -3, z0 - 1), new pc.Vec3(x0 + size + 1, 12, z0 + size + 1));
+        const mi = this.makeInstanced(groundLeafMeshes[j], this.mats.leaves, new Float32Array(arr), arr.length / 8, aabb);
+        groundMis.push(mi);
+        this.clusters.push({ mi, x: x0 + size / 2, z: z0 + size / 2, radius: size * 0.71, base: arr.length / 8, kind: 'grass' });
+      });
+    }
+    if (groundMis.length) this.addEntity('ground-leaves', groundMis, false);
+
+    // leaves drifting on the pond (one draw call)
+    const palette = [[0.95, 0.45, 0.1], [0.85, 0.25, 0.08], [1.0, 0.7, 0.2]];
+    const leafMeshes = palette.map((c) => leafMesh(this.device, c));
+    const pondLeaves = [[], [], []];
+    for (let i = 0; i < 120; i++) {
+      const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * (WORLD.pond.r + 1.5);
+      const x = WORLD.pond.x + Math.cos(a) * d, z = WORLD.pond.z + Math.sin(a) * d;
+      if (this.hf.at(x, z) > WORLD.waterY - 0.05) continue;
+      pondLeaves[i % 3].push(x, WORLD.waterY + 0.02, z, 0.8 + rng() * 0.6, rng() * Math.PI * 2, 0.8 + rng() * 0.3, rng(), 0);
+    }
+    const pondMis = [];
+    pondLeaves.forEach((arr, i) => {
+      if (!arr.length) return;
+      const R = WORLD.pond.r + 2;
+      const aabb = new pc.BoundingBox(new pc.Vec3(WORLD.pond.x, WORLD.waterY, WORLD.pond.z), new pc.Vec3(R, 0.5, R));
+      const mi = this.makeInstanced(leafMeshes[i], this.mats.leaves, new Float32Array(arr), arr.length / 8, aabb);
+      pondMis.push(mi);
+      this.clusters.push({ mi, x: WORLD.pond.x, z: WORLD.pond.z, radius: R, base: arr.length / 8, kind: 'deco' });
+    });
+    this.addEntity('pond-leaves', pondMis, false);
+
+    // leaves falling from the canopy (animated entirely on the GPU, count follows quality)
+    const max = 260;
+    const fdata = new Float32Array(max * 8);
+    for (let i = 0; i < max; i++) {
+      const a = rng() * Math.PI * 2, d = 3 + rng() * 55;
+      const x = Math.cos(a) * d, z = Math.sin(a) * d;
+      fdata.set([x, Math.max(this.hf.at(x, z), WORLD.waterY) + 0.6, z, 0.9 + rng() * 0.5, rng() * Math.PI * 2, 0.75 + rng() * 0.4, rng(), 0], i * 8);
+    }
+    const faabb = new pc.BoundingBox(new pc.Vec3(0, 6, 0), new pc.Vec3(WORLD.half, 12, WORLD.half));
+    const fmi = this.makeInstanced(leafMeshes[0], this.mats.falling, fdata, max, faabb);
+    this.falling = { mi: fmi, max };
+    this.addEntity('falling-leaves', [fmi], false);
+
+    // warm god-rays slanting in from the low sun: soft-edged crossed cards, one draw call
+    const mb = new MeshBuilder();
+    const [sx, sy, sz] = SUN_DIR;
+    const spots = [[-8, 47], [2, 40], [-14, 31], [4, 23], [20, 14], [0, 8], [24, -2], [3, -6], [17, -14], [-12, -12], [-28, -2], [16, -30], [30, -40], [-8, -38], [44, -24], [-36, 18]];
+    for (const [gx, gz] of spots) {
+      const L = 16 + rng() * 6, w0 = 0.35 + rng() * 0.35, w1 = w0 * 2.6;
+      const base = [gx, this.hf.at(gx, gz) - 0.3, gz];
+      const top = [gx + sx * L, base[1] + sy * L, gz + sz * L];
+      const k = 0.55 + rng() * 0.45;
+      for (const ang of [0, Math.PI / 2]) {
+        // a horizontal side axis perpendicular to the shaft, rotated for the second card
+        let ax = -sz, az = sx;
+        const al = Math.hypot(ax, az); ax /= al; az /= al;
+        const c = Math.cos(ang), s2 = Math.sin(ang);
+        const side = [ax * c, s2, az * c];
+        const ring = [];
+        for (const [t, along] of [[0, 0], [0.18, 1], [1, 0.0]]) {
+          const px = base[0] + (top[0] - base[0]) * t, py = base[1] + (top[1] - base[1]) * t, pz = base[2] + (top[2] - base[2]) * t;
+          const w = w0 + (w1 - w0) * t;
+          const glow = along * k;
+          const col = (e) => rgba(0.15 * glow * e, 0.1 * glow * e, 0.04 * glow * e, CLS.GLOW, 0);
+          ring.push([
+            mb.vert(px - side[0] * w, py - side[1] * w, pz - side[2] * w, 0, 1, 0, col(0)),
+            mb.vert(px, py, pz, 0, 1, 0, col(1)),
+            mb.vert(px + side[0] * w, py + side[1] * w, pz + side[2] * w, 0, 1, 0, col(0)),
+          ]);
+        }
+        for (let r = 0; r < ring.length - 1; r++) {
+          for (let j = 0; j < 2; j++) {
+            const a = ring[r][j], b = ring[r][j + 1], c2 = ring[r + 1][j], d = ring[r + 1][j + 1];
+            mb.tri(a, c2, b); mb.tri(b, c2, d);
+          }
+        }
+      }
+    }
+    this.addEntity('god-rays', [new pc.MeshInstance(mb.build(this.device), this.mats.shafts)], false);
+  }
+
   // --------------------------------------------------------------- per-frame
   setQuality(q) {
     this.grassDensity = q.grass;
@@ -676,6 +853,10 @@ export class World {
     const ff = this.fireflies;
     ff.mi.visible = this.fireflyCount > 0;
     if (ff.mi.visible) ff.mi.instancingCount = Math.min(ff.max, this.fireflyCount);
+    const fa = this.falling;
+    const nFall = Math.min(fa.max, Math.round(this.fireflyCount * 0.65));
+    fa.mi.visible = nFall > 0;
+    if (nFall > 0) fa.mi.instancingCount = nFall;
     this.visibleClusters = vis;
   }
 }

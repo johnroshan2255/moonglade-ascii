@@ -1,8 +1,8 @@
 // Interactive story props. Each returns entities + small animation handles; gameplay.js drives them.
 import * as pc from 'playcanvas';
 import { CLS, worldMaterial } from './shaders.js';
-import { MeshBuilder, rgba, addBox, addCylinder, addSphere, emberCoreMesh } from './meshes.js';
-import { LAYOUT } from './story.js';
+import { MeshBuilder, rgba, addBox, addCylinder, addSphere, addLathe, emberCoreMesh } from './meshes.js';
+import { LAYOUT, STONES } from './story.js';
 import { WORLD, SHRINE_Y } from './world.js';
 import { mulberry32 } from './noise.js';
 
@@ -10,6 +10,35 @@ const wood = (v = 0) => rgba(0.16 + v, 0.13 + v, 0.1 + v, CLS.GROUND);
 const stone = (v = 0) => rgba(0.28 + v, 0.28 + v, 0.29 + v, CLS.STONE);
 const iron = (v = 0) => rgba(0.17 + v, 0.17 + v, 0.18 + v, CLS.STONE);
 const brass = (v = 0) => rgba(0.55 + v, 0.42 + v, 0.2 + v, CLS.STONE);
+const moss = (v = 0) => rgba(0.26 + v, 0.34 + v, 0.12 + v * 0.5, CLS.STONE);
+
+/** Box from a centre and three (unit) axes: for masonry that turns about Z, like arch voussoirs. */
+function orientedBox(mb, c, ax, ay, az, hx, hy, hz, col) {
+  const P = (i, j, k) => [c[0] + ax[0] * hx * i + ay[0] * hy * j + az[0] * hz * k, c[1] + ax[1] * hx * i + ay[1] * hy * j + az[1] * hz * k, c[2] + ax[2] * hx * i + ay[2] * hy * j + az[2] * hz * k];
+  const face = (n, corners, fc) => {
+    const v = corners.map(([i, j, k]) => { const p = P(i, j, k); return mb.vert(p[0], p[1], p[2], n[0], n[1], n[2], fc); });
+    mb.tri(v[0], v[1], v[2]); mb.tri(v[0], v[2], v[3]);
+  };
+  const neg = (v) => [-v[0], -v[1], -v[2]];
+  const top = typeof col === 'function' ? col('top') : col;
+  const side = typeof col === 'function' ? col('side') : col;
+  face(ax, [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]], side);
+  face(neg(ax), [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]], side);
+  face(ay, [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]], top);
+  face(neg(ay), [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]], side);
+  face(az, [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], side);
+  face(neg(az), [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]], side);
+}
+
+/** A flat glowing stroke in the XY plane at depth z, visible from the side 'face' points to. */
+function stroke(mb, a, b, z, w, face, col) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+  const px = (-dy / l) * w * 0.5, py = (dx / l) * w * 0.5;
+  const v = [[a[0] - px, a[1] - py], [a[0] + px, a[1] + py], [b[0] + px, b[1] + py], [b[0] - px, b[1] - py]]
+    .map(([x, y]) => mb.vert(x, y, z, 0, 0, face, col));
+  mb.tri(v[0], v[1], v[2]); mb.tri(v[0], v[2], v[3]);
+  mb.tri(v[0], v[2], v[1]); mb.tri(v[0], v[3], v[2]);
+}
 
 export class Props {
   constructor(app, world, layers) {
@@ -33,6 +62,7 @@ export class Props {
     this.buildBeacons();
     this.buildExitGate();
     this.buildSunbeams();
+    this.buildStones();
     for (const r of world.rocks) this.targets.push({ x: r[0], z: r[1], kind: 'rock' });
     for (const p of world.pillars) this.targets.push({ x: p[0], z: p[1], kind: 'rock' });
   }
@@ -172,10 +202,32 @@ export class Props {
     base.setPosition(archX, y, z);
     this.root.addChild(base);
     const mb = new MeshBuilder();
-    addBox(mb, { x: -archHalf - 0.45, y: 2.4, sx: 0.9, sy: 4.8, sz: 1.0, col: stone(0) });
-    addBox(mb, { x: archHalf + 0.45, y: 2.3, sx: 0.9, sy: 4.6, sz: 1.0, col: stone(-0.02) });
-    addBox(mb, { x: 0.1, y: 5.0, sx: archHalf * 2 + 2.4, sy: 0.8, sz: 1.2, tilt: 0.04, col: stone(0.04) });
-    this.ent('archStones', mb, { parent: base });
+    const rng = mulberry32(919);
+    const block = () => { const v = (rng() - 0.5) * 0.06; const m = rng() < 0.45; return (f) => (f === 'top' && m ? moss(v) : stone(v)); };
+    // two coursed pillars of rough blocks
+    const springY = 2.9;
+    for (const sgn of [-1, 1]) {
+      const px = sgn * (archHalf + 0.5);
+      for (let k = 0, yy = 0; yy < springY - 0.05; k++) {
+        const h = 0.5 + rng() * 0.18;
+        const hh = Math.min(h, springY - yy);
+        orientedBox(mb, [px + (rng() - 0.5) * 0.08, yy + hh / 2, (rng() - 0.5) * 0.06], [1, 0, 0], [0, 1, 0], [0, 0, 1], 0.5 + rng() * 0.05, hh / 2 - 0.015, 0.6, block());
+        yy += hh;
+      }
+      // a plinth stone at each foot
+      orientedBox(mb, [px, 0.12, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], 0.62, 0.2, 0.72, (f) => (f === 'top' ? moss(-0.02) : stone(-0.06)));
+    }
+    // the ring of wedge stones (voussoirs) with a keystone
+    const n = 13, rMid = archHalf + 0.5;
+    for (let k = 0; k < n; k++) {
+      const a = Math.PI - (k + 0.5) * (Math.PI / n);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const key = k === (n - 1) / 2;
+      const c = [ca * rMid, springY + sa * rMid, 0];
+      const radial = [ca, sa, 0], tangent = [-sa, ca, 0];
+      orientedBox(mb, c, tangent, radial, [0, 0, 1], (Math.PI * rMid) / n / 2 - 0.02, key ? 0.62 : 0.5 + rng() * 0.05, key ? 0.68 : 0.6, block());
+    }
+    this.ent('archStones', mb, { parent: base, reflect: true });
     const port = new pc.Entity('portcullis');
     base.addChild(port);
     const pb = new MeshBuilder();
@@ -275,14 +327,58 @@ export class Props {
     this.exitGate = { slab, open: 0, x: g.x, z: g.z };
   }
 
+  // --------------------------------------------------------------- rune stones: an old note waits at each
+  buildStones() {
+    // the rune: a diamond in a diamond with a stroke above and below, carved through both faces
+    const rb = new MeshBuilder();
+    const ember = rgba(1.0, 0.56, 0.18, CLS.GLOW, 0);
+    for (const side of [1, -1]) {
+      const z = 0.258 * side, R = 0.2, w = 0.04;
+      const d = [[0, R], [R * 0.68, 0], [0, -R], [-R * 0.68, 0]];
+      for (let k = 0; k < 4; k++) stroke(rb, d[k], d[(k + 1) % 4], z, w, side, ember);
+      const r = 0.075;
+      const e = [[0, r], [r * 0.68, 0], [0, -r], [-r * 0.68, 0]];
+      for (let k = 0; k < 4; k++) stroke(rb, e[k], e[(k + 1) % 4], z, w * 0.8, side, ember);
+      stroke(rb, [0, R + 0.06], [0, R + 0.24], z, w, side, ember);
+      stroke(rb, [0, -R - 0.06], [0, -R - 0.24], z, w, side, ember);
+    }
+    const runeMesh = rb.build(this.device);
+
+    this.stones = STONES.map((def, i) => {
+      const rng = mulberry32(300 + i * 17);
+      const y = this.y(def.x, def.z);
+      const base = new pc.Entity('runeStone');
+      base.setPosition(def.x, y - 0.12, def.z);
+      base.setEulerAngles((rng() - 0.5) * 6, rng() * 360, (rng() - 0.5) * 6);
+      this.root.addChild(base);
+      // a weathered menhir: flat-faced, rounded crown, moss creeping over the top
+      const mb = new MeshBuilder();
+      addLathe(mb, [[0.0, -0.1], [1.0, -0.1], [1.06, 0.4], [1.0, 1.3], [0.92, 1.85], [0.7, 2.25], [0.36, 2.48], [0.0, 2.55]], {
+        seg: 12, sx: 0.44, sz: 0.235, jitter: 0.06, rng,
+        colFn: (t) => (t > 0.82 ? moss(rng() * 0.04) : t < 0.12 ? stone(-0.04) : stone(0.06 + rng() * 0.03)),
+      });
+      // a couple of moss pads at its foot
+      for (let k = 0; k < 3; k++) {
+        const a = rng() * Math.PI * 2;
+        addSphere(mb, { x: Math.cos(a) * 0.5, y: 0.0, z: Math.sin(a) * 0.32, r: 0.28 + rng() * 0.15, sy: 0.4, segW: 6, segH: 3, colFn: () => moss(-0.04) });
+      }
+      this.ent('menhir', mb, { parent: base });
+      const runeMat = worldMaterial({ emissive: 2.6 });
+      const rune = new pc.Entity('rune');
+      rune.addComponent('render', { meshInstances: [new pc.MeshInstance(runeMesh, runeMat)], layers: [this.layers.world.id, this.layers.reflect.id], castShadows: false, receiveShadows: false });
+      rune.setLocalPosition(0, 1.3, 0);
+      rune.setLocalScale(1.45, 1.45, 1);
+      base.addChild(rune);
+      this.world.colliders.add(def.x, def.z, 0.55);
+      this.targets.push({ x: def.x, z: def.z, kind: 'rock' });
+      return { ...def, i, y, e: base, runeMat, read: false, inside: false };
+    });
+  }
+
   // --------------------------------------------------------------- the white light
   buildSunbeams() {
-    const mat = worldMaterial({ emissive: 0.32 });
-    // additive light shafts that leave the glyph-class alpha untouched
-    mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, pc.BLENDEQUATION_ADD, pc.BLENDMODE_ZERO, pc.BLENDMODE_ONE);
-    mat.depthWrite = false;
-    mat.cull = pc.CULLFACE_NONE;
-    mat.update();
+    // additive light shafts that leave the glyph-class alpha untouched and fade into the mist
+    const mat = worldMaterial({ emissive: 0.32, additive: true });
     const mb = new MeshBuilder();
     addCylinder(mb, { r0: 0.8, r1: 1.6, h: 34, seg: 10, capTop: false, colFn: (t) => rgba(0.26 * (1 - t * 0.8), 0.27 * (1 - t * 0.8), 0.29 * (1 - t * 0.8), CLS.GLOW) });
     const mesh = mb.build(this.device);

@@ -87,7 +87,7 @@ fn grassSub(w: vec3f, t: f32) -> f32 {
 // ---------------------------------------------------------------- world (lit) shader
 // Vertex colour alpha packs (class * 32 + swayWeight * 31) so one mesh can hold several glyph
 // families (e.g. tree trunk + canopy) and still be a single draw call.
-function worldVS_GLSL({ inst, push, fly }) {
+function worldVS_GLSL({ inst, push, fly, fall }) {
   return `
 attribute vec3 vertex_position;
 attribute vec3 vertex_normal;
@@ -121,8 +121,18 @@ ${inst ? `
   n = vec3(cr * n.x + sr * n.z, n.y, -sr * n.x + cr * n.z);
   col *= inst1.y;
   seed = inst1.z;` : ''}
+${fall ? `
+  // a leaf: tumbles about its own axis, falls ~6 m on a loop, shrinks to nothing at either end
+  float ft = uTime * (0.3 + seed * 0.2) + seed * 13.0;
+  float cyc = fract(ft / 6.0);
+  float ta = uTime * (1.7 + seed * 2.3) + seed * 31.0;
+  float ca = cos(ta), sa = sin(ta);
+  p = vec3(p.x, p.y * ca - p.z * sa, p.y * sa + p.z * ca) * (smoothstep(0.0, 0.06, cyc) * (1.0 - smoothstep(0.9, 1.0, cyc)));
+  n = vec3(n.x, n.y * ca - n.z * sa, n.y * sa + n.z * ca);` : ''}
   vec4 wp = matrix_model * vec4(p, 1.0);
 ${inst ? '  wp.xyz += inst0.xyz;' : ''}
+${fall ? `
+  wp.xyz += vec3(sin(ft * 1.3 + seed * 9.0) * 0.9 + cyc * 2.2, 5.0 - cyc * 6.0, cos(ft * 1.1 + seed * 5.0) * 0.7);` : ''}
 ${fly ? `
   float t = uTime;
   wp.xyz += vec3(sin(t * 0.37 + seed * 17.0) * 1.8 + sin(t * 1.1 + seed * 5.0) * 0.3,
@@ -150,7 +160,7 @@ ${push ? ['uPlayer', 'uPush0', 'uPush1'].map((u) => `
 }`;
 }
 
-function worldVS_WGSL({ inst, push, fly }) {
+function worldVS_WGSL({ inst, push, fly, fall }) {
   return `
 attribute vertex_position: vec3f;
 attribute vertex_normal: vec3f;
@@ -186,8 +196,18 @@ ${inst ? `
   n = vec3f(cr * n.x + sr * n.z, n.y, -sr * n.x + cr * n.z);
   col = col * input.inst1.y;
   seed = input.inst1.z;` : ''}
+${fall ? `
+  let ft = uniform.uTime * (0.3 + seed * 0.2) + seed * 13.0;
+  let cyc = fract(ft / 6.0);
+  let ta = uniform.uTime * (1.7 + seed * 2.3) + seed * 31.0;
+  let ca = cos(ta);
+  let sa = sin(ta);
+  p = vec3f(p.x, p.y * ca - p.z * sa, p.y * sa + p.z * ca) * (smoothstep(0.0, 0.06, cyc) * (1.0 - smoothstep(0.9, 1.0, cyc)));
+  n = vec3f(n.x, n.y * ca - n.z * sa, n.y * sa + n.z * ca);` : ''}
   var wp = uniform.matrix_model * vec4f(p, 1.0);
 ${inst ? '  wp = vec4f(wp.xyz + input.inst0.xyz, 1.0);' : ''}
+${fall ? `
+  wp = vec4f(wp.xyz + vec3f(sin(ft * 1.3 + seed * 9.0) * 0.9 + cyc * 2.2, 5.0 - cyc * 6.0, cos(ft * 1.1 + seed * 5.0) * 0.7), 1.0);` : ''}
 ${fly ? `
   let t = uniform.uTime;
   wp = vec4f(wp.xyz + vec3f(sin(t * 0.37 + seed * 17.0) * 1.8 + sin(t * 1.1 + seed * 5.0) * 0.3,
@@ -222,17 +242,17 @@ const FOG_GLSL = `
 // distance haze (exp^2, fades to the pale haze colour) + low ground mist
 float fogAmount(vec3 w, vec3 eye) {
   float d = length(w - eye);
-  float t = max(d - uFog.x, 0.0) / max(uFog.y - uFog.x, 0.001) * 1.8;
+  float t = max(d - uFog.x, 0.0) / max(uFog.y - uFog.x, 0.001) * 1.45;
   float fd = 1.0 - exp(-t * t);
-  float mist = uFog.z * exp(-max(w.y, 0.0) * uFog.w) * smoothstep(2.0, 16.0, d);
+  float mist = uFog.z * exp(-max(w.y, 0.0) * uFog.w) * smoothstep(8.0, 30.0, d);
   return clamp(fd + mist * (1.0 - fd), 0.0, 1.0);
 }`;
 const FOG_WGSL = `
 fn fogAmount(w: vec3f, eye: vec3f) -> f32 {
   let d = length(w - eye);
-  let t = max(d - uniform.uFog.x, 0.0) / max(uniform.uFog.y - uniform.uFog.x, 0.001) * 1.8;
+  let t = max(d - uniform.uFog.x, 0.0) / max(uniform.uFog.y - uniform.uFog.x, 0.001) * 1.45;
   let fd = 1.0 - exp(-t * t);
-  let mist = uniform.uFog.z * exp(-max(w.y, 0.0) * uniform.uFog.w) * smoothstep(2.0, 16.0, d);
+  let mist = uniform.uFog.z * exp(-max(w.y, 0.0) * uniform.uFog.w) * smoothstep(8.0, 30.0, d);
   return clamp(fd + mist * (1.0 - fd), 0.0, 1.0);
 }`;
 
@@ -251,6 +271,7 @@ uniform vec3 uHaze;
 uniform vec3 view_position;
 uniform float uTime;
 uniform float uEmissive;
+uniform float uAdditive;
 uniform float uNearFade;
 uniform vec4 uRing0;
 uniform vec4 uRing1;
@@ -264,6 +285,27 @@ varying float vGlow;
 ${HASH_GLSL}
 ${GRASS_GLSL}
 ${FOG_GLSL}
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+// weathered stone: blotches, a crack network and chipped, sun-caught upper faces
+vec3 stoneDetail(vec3 col, vec3 w, vec3 n) {
+  vec3 an = abs(n);
+  vec2 uv = an.y > max(an.x, an.z) ? w.xz : (an.x > an.z ? w.zy : w.xy);
+  float n1 = vnoise(uv * 2.1);
+  float n2 = vnoise(uv * 6.3 + 7.1);
+  float cr = abs(vnoise(uv * 1.35 + vec2(n2, n1) * 0.8) - 0.5);
+  float crack = 1.0 - smoothstep(0.005, 0.018, cr);
+  float chip = smoothstep(0.84, 0.93, vnoise(uv * 4.3 + 19.0)); // pale broken-off patches
+  float mossy = smoothstep(1.05, 1.25, col.g / max(col.r, 0.001)); // moss is not cracked
+  col *= mix(0.8, 1.12, n1) * mix(0.93, 1.05, n2);
+  col = mix(col, col * 1.35 + vec3(0.03, 0.025, 0.015), chip * (1.0 - mossy) * 0.35);
+  col *= 1.0 - crack * 0.5 * (1.0 - mossy);
+  return col;
+}
 void main(void) {
   float camD = length(vWorld - view_position);
   if (camD < uNearFade && hash12(floor(gl_FragCoord.xy)) > (camD - 1.0) / (uNearFade - 1.0)) discard;
@@ -280,7 +322,17 @@ void main(void) {
     float sd = length(vWorld.xz - uPlayer.xz);
     light *= mix(0.25, 1.0, smoothstep(0.15, 0.7, sd));
   }
-  vec3 c = vColor * light + vColor * (uEmissive * vGlow);
+  float clsIn = floor(vCls + 0.5);
+  vec3 base = vColor;
+  if (clsIn == 4.0 && uEmissive < 0.5 && camD < 40.0) base = stoneDetail(base, vWorld, n);
+  // leafy dapple on canopies: clumps of light and shade instead of smooth blobs
+  if (clsIn == 3.0 && camD < 40.0) base *= mix(0.7, 1.15, vnoise(vWorld.xz * 3.3 + vWorld.y * 2.1)) * mix(0.9, 1.08, vnoise(vWorld.xy * 8.0));
+  // painterly highlights: sunlit upper faces warm up
+  base *= 1.0 + smoothstep(0.6, 0.95, n.y) * max(dot(n, uMoonDir), 0.0) * 0.25;
+  vec3 c = base * light + base * (uEmissive * vGlow);
+  // the low sun behind things rims every silhouette in warm light (leaves, stones, the wanderer)
+  float edge = pow(1.0 - max(dot(n, V), 0.0), 2.5);
+  c += uMoonCol * edge * max(dot(-V, uMoonDir), 0.0) * 0.5 * min(length(vColor) * 3.0, 1.0) * (1.0 - uAdditive);
   // sound rings (staff strikes, chimes, the warden's footfalls)
   float rg = 0.0;
   rg += (1.0 - smoothstep(0.0, 0.45, abs(length(vWorld.xz - uRing0.xy) - uRing0.z))) * uRing0.w;
@@ -293,7 +345,7 @@ void main(void) {
   float fog = fogAmount(vWorld, view_position);
   // emissive things punch through the haze a little
   fog *= 1.0 - clamp(uEmissive * 0.25, 0.0, 0.6);
-  c = mix(c, uHaze, fog);
+  c = uAdditive > 0.5 ? c * (1.0 - fog) : mix(c, uHaze, fog);
   float cls = floor(vCls + 0.5);
   float sub = floor(fog * 31.0 + 0.5);
   if (cls == 2.0) {
@@ -315,6 +367,7 @@ uniform uHaze: vec3f;
 uniform view_position: vec3f;
 uniform uTime: f32;
 uniform uEmissive: f32;
+uniform uAdditive: f32;
 uniform uNearFade: f32;
 uniform uRing0: vec4f;
 uniform uRing1: vec4f;
@@ -328,6 +381,28 @@ varying vGlow: f32;
 ${HASH_WGSL}
 ${GRASS_WGSL}
 ${FOG_WGSL}
+
+fn vnoise(p: vec2f) -> f32 {
+  let i = floor(p);
+  var f = fract(p);
+  f = f * f * (vec2f(3.0) - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2f(1.0, 0.0)), f.x), mix(hash12(i + vec2f(0.0, 1.0)), hash12(i + vec2f(1.0, 1.0)), f.x), f.y);
+}
+fn stoneDetail(colIn: vec3f, w: vec3f, n: vec3f) -> vec3f {
+  let an = abs(n);
+  var uv = w.xy;
+  if (an.y > max(an.x, an.z)) { uv = w.xz; } else if (an.x > an.z) { uv = w.zy; }
+  let n1 = vnoise(uv * 2.1);
+  let n2 = vnoise(uv * 6.3 + vec2f(7.1));
+  let cr = abs(vnoise(uv * 1.35 + vec2f(n2, n1) * 0.8) - 0.5);
+  let crack = 1.0 - smoothstep(0.005, 0.018, cr);
+  let chip = smoothstep(0.84, 0.93, vnoise(uv * 4.3 + vec2f(19.0)));
+  let mossy = smoothstep(1.05, 1.25, colIn.g / max(colIn.r, 0.001));
+  var col = colIn * mix(0.8, 1.12, n1) * mix(0.93, 1.05, n2);
+  col = mix(col, col * 1.35 + vec3f(0.03, 0.025, 0.015), chip * (1.0 - mossy) * 0.35);
+  col = col * (1.0 - crack * 0.5 * (1.0 - mossy));
+  return col;
+}
 @fragment
 fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   var output: FragmentOutput;
@@ -346,7 +421,14 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     let sd = length(input.vWorld.xz - uniform.uPlayer.xz);
     light = light * mix(0.25, 1.0, smoothstep(0.15, 0.7, sd));
   }
-  var c = input.vColor * light + input.vColor * (uniform.uEmissive * input.vGlow);
+  let clsIn = floor(input.vCls + 0.5);
+  var base = input.vColor;
+  if (clsIn == 4.0 && uniform.uEmissive < 0.5 && camD < 40.0) { base = stoneDetail(base, input.vWorld, n); }
+  if (clsIn == 3.0 && camD < 40.0) { base = base * mix(0.7, 1.15, vnoise(input.vWorld.xz * 3.3 + vec2f(input.vWorld.y * 2.1))) * mix(0.9, 1.08, vnoise(input.vWorld.xy * 8.0)); }
+  base = base * (1.0 + smoothstep(0.6, 0.95, n.y) * max(dot(n, uniform.uMoonDir), 0.0) * 0.25);
+  var c = base * light + base * (uniform.uEmissive * input.vGlow);
+  let edge = pow(1.0 - max(dot(n, V), 0.0), 2.5);
+  c = c + uniform.uMoonCol * edge * max(dot(-V, uniform.uMoonDir), 0.0) * 0.5 * min(length(input.vColor) * 3.0, 1.0) * (1.0 - uniform.uAdditive);
   var rg = 0.0;
   rg = rg + (1.0 - smoothstep(0.0, 0.45, abs(length(input.vWorld.xz - uniform.uRing0.xy) - uniform.uRing0.z))) * uniform.uRing0.w;
   rg = rg + (1.0 - smoothstep(0.0, 0.45, abs(length(input.vWorld.xz - uniform.uRing1.xy) - uniform.uRing1.z))) * uniform.uRing1.w;
@@ -356,7 +438,7 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   c = c + uniform.uHaze * rim * 0.22;
   var fog = fogAmount(input.vWorld, uniform.view_position);
   fog = fog * (1.0 - clamp(uniform.uEmissive * 0.25, 0.0, 0.6));
-  c = mix(c, uniform.uHaze, fog);
+  if (uniform.uAdditive > 0.5) { c = c * (1.0 - fog); } else { c = mix(c, uniform.uHaze, fog); }
   var cls = floor(input.vCls + 0.5);
   var sub = floor(fog * 31.0 + 0.5);
   if (cls == 2.0) {
@@ -432,22 +514,19 @@ void main(void) {
 
   // faked sky: the pale haze itself, a cold moon disc and a few stars
   float m = max(dot(r, uMoonSky), 0.0);
-  float moon = smoothstep(0.9978, 0.9987, m);
-  float halo = pow(m, 60.0) * 0.25;
-  vec2 sp = floor(r.xz / max(r.y, 0.05) * 18.0);
-  float star = step(0.99, hash12(sp)) * (0.5 + 0.5 * sin(uTime * 3.0 + hash12(sp + 3.1) * 40.0));
-  vec3 sky = uHaze * 0.8 + vec3(0.95) * (moon * 1.4 + halo) + vec3(0.5) * star * 0.25;
-  float sub = moon > 0.5 ? 2.0 : 0.0;
+  float glint = pow(m, 40.0) * 0.55 + pow(m, 6.0) * 0.12;
+  vec3 sky = uHaze * vec3(0.5, 0.66, 0.72) + vec3(1.0, 0.72, 0.42) * glint;
+  float sub = glint > 0.4 ? 2.0 : 0.0;
 
   // reflected objects come back as dark silhouettes (rigid mirror camera => flip x)
   vec2 uv = gl_FragCoord.xy / uRtSize;
   vec4 rc = texture2D(uRefl, vec2(1.0 - uv.x, uv.y) + nrm.xz * 0.03);
-  float hasObj = step(0.01, rc.a) * uReflOn;
-  vec3 col = mix(sky, rc.rgb * 0.6, hasObj);
+  float hasObj = smoothstep(0.0, 0.5, rc.a) * uReflOn;
+  vec3 col = mix(sky, rc.rgb * 0.75, hasObj);
   if (hasObj > 0.5) sub = 1.0;
 
   float fres = mix(0.45, 0.95, pow(1.0 - abs(vd.y), 2.0));
-  col = vec3(0.008, 0.024, 0.02) + col * fres;
+  col = vec3(0.015, 0.04, 0.05) + col * fres * vec3(0.8, 0.95, 1.0);
   // bloated pale body with dozens of hair-thin arms, just beneath the surface
   float mbody = 1.0 - smoothstep(uMire.z * 0.3, uMire.z * 0.6, md);
   float mang = atan(mq.y, mq.x);
@@ -508,21 +587,18 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   let r = reflect(vd, nrm);
 
   let m = max(dot(r, uniform.uMoonSky), 0.0);
-  let moon = smoothstep(0.9978, 0.9987, m);
-  let halo = pow(m, 60.0) * 0.25;
-  let sp = floor(r.xz / max(r.y, 0.05) * 18.0);
-  let star = step(0.99, hash12(sp)) * (0.5 + 0.5 * sin(uniform.uTime * 3.0 + hash12(sp + vec2f(3.1)) * 40.0));
-  let sky = uniform.uHaze * 0.8 + vec3f(0.95) * (moon * 1.4 + halo) + vec3f(0.5) * star * 0.25;
-  var sub = select(0.0, 2.0, moon > 0.5);
+  let glint = pow(m, 40.0) * 0.55 + pow(m, 6.0) * 0.12;
+  let sky = uniform.uHaze * vec3f(0.5, 0.66, 0.72) + vec3f(1.0, 0.72, 0.42) * glint;
+  var sub = select(0.0, 2.0, glint > 0.4);
 
   let uv = input.position.xy / uniform.uRtSize;
   let rc = textureSampleLevel(uRefl, uRefl_sampler, vec2f(1.0 - uv.x, uv.y) + nrm.xz * 0.03, 0.0);
-  let hasObj = step(0.01, rc.a) * uniform.uReflOn;
-  var col = mix(sky, rc.rgb * 0.6, hasObj);
+  let hasObj = smoothstep(0.0, 0.5, rc.a) * uniform.uReflOn;
+  var col = mix(sky, rc.rgb * 0.75, hasObj);
   if (hasObj > 0.5) { sub = 1.0; }
 
   let fres = mix(0.45, 0.95, pow(1.0 - abs(vd.y), 2.0));
-  col = vec3f(0.008, 0.024, 0.02) + col * fres;
+  col = vec3f(0.015, 0.04, 0.05) + col * fres * vec3f(0.8, 0.95, 1.0);
   let mbody = 1.0 - smoothstep(uniform.uMire.z * 0.3, uniform.uMire.z * 0.6, md);
   let mang = atan2(mq.y, mq.x);
   let marms = pow(abs(sin(mang * 13.0 + sin(md * 1.3 - uniform.uTime * 0.8) * 1.5)), 40.0) * (1.0 - smoothstep(uniform.uMire.z * 0.35, uniform.uMire.z * 1.3, md));
@@ -565,7 +641,7 @@ vec3 grade(vec3 c) {
   float amber = smoothstep(0.3, 0.42, c.g / max(c.r, 0.0001)); // flame-coloured, not red
   vec3 mono = mix(vec3(l) * vec3(0.94, 0.97, 1.0), c, warm * amber * 0.9);
   // muted colour: keep ~60% saturation, push shadows slightly teal, keep warm light rich
-  vec3 muted = mix(vec3(l), c, 0.62) * mix(vec3(0.9, 1.0, 1.04), vec3(1.0), smoothstep(0.05, 0.45, l));
+  vec3 muted = mix(vec3(l), c, 1.12) * mix(vec3(0.9, 1.0, 1.06), vec3(1.0), smoothstep(0.05, 0.45, l));
   muted = mix(muted, c, warm * 0.8);
   return mix(muted, mono, uMono);
 }`;
@@ -577,7 +653,7 @@ fn grade(c: vec3f) -> vec3f {
   let warm = clamp((c.r - c.b) / max(mx, 0.0001) * 1.8 - 0.45, 0.0, 1.0) * smoothstep(0.015, 0.08, l);
   let amber = smoothstep(0.3, 0.42, c.g / max(c.r, 0.0001));
   let mono = mix(vec3f(l) * vec3f(0.94, 0.97, 1.0), c, warm * amber * 0.9);
-  var muted = mix(vec3f(l), c, 0.62) * mix(vec3f(0.9, 1.0, 1.04), vec3f(1.0), smoothstep(0.05, 0.45, l));
+  var muted = mix(vec3f(l), c, 1.12) * mix(vec3f(0.9, 1.0, 1.06), vec3f(1.0), smoothstep(0.05, 0.45, l));
   muted = mix(muted, c, warm * 0.8);
   return mix(muted, mono, uniform.uMono);
 }`;
@@ -803,12 +879,12 @@ void main(void) {
   c *= (1.0 - exp(-l0 * 2.4)) / max(l0, 0.0001);
   c = min(grade(c), vec3(1.0));
   vec3 sc = c * c * (3.0 - 2.0 * c);
-  c = mix(c, sc, 0.65);
+  c = mix(c, sc, 0.55);
   vec2 gq = (uv - uGlow.xy) * vec2(uScreen.x / uScreen.y, 1.0);
   c += vec3(1.0, 0.52, 0.18) * exp(-dot(gq, gq) / max(uGlow.z * uGlow.z, 0.00001)) * uGlow.w;
   vec2 q = (uv - 0.5) * vec2(uScreen.x / uScreen.y, 1.0);
   float vig = 1.0 - smoothstep(0.25, 1.05, length(q) * (uScreen.x > uScreen.y ? 1.0 : 1.35));
-  c *= mix(0.12, 1.0, vig);
+  c *= mix(0.4, 1.0, vig);
   float flick = 1.0 + (hash12(vec2(floor(uTime * 14.0), 3.7)) - 0.5) * 0.035;
   float grain = (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 811.0) - 0.5) * 0.07;
   c = c * flick + grain;
@@ -842,12 +918,12 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   c = c * ((1.0 - exp(-l0 * 2.4)) / max(l0, 0.0001));
   c = min(grade(c), vec3f(1.0));
   let sc = c * c * (vec3f(3.0) - 2.0 * c);
-  c = mix(c, sc, 0.65);
+  c = mix(c, sc, 0.55);
   let gq = (uv - uniform.uGlow.xy) * vec2f(uniform.uScreen.x / uniform.uScreen.y, 1.0);
   c = c + vec3f(1.0, 0.52, 0.18) * exp(-dot(gq, gq) / max(uniform.uGlow.z * uniform.uGlow.z, 0.00001)) * uniform.uGlow.w;
   let q = (uv - vec2f(0.5)) * vec2f(uniform.uScreen.x / uniform.uScreen.y, 1.0);
   let vig = 1.0 - smoothstep(0.25, 1.05, length(q) * select(1.35, 1.0, uniform.uScreen.x > uniform.uScreen.y));
-  c = c * mix(0.12, 1.0, vig);
+  c = c * mix(0.4, 1.0, vig);
   let flick = 1.0 + (hash12(vec2f(floor(uniform.uTime * 14.0), 3.7)) - 0.5) * 0.035;
   let grain = (hash12(fc + vec2f(fract(uniform.uTime * 7.31) * 811.0)) - 0.5) * 0.07;
   c = c * flick + vec3f(grain);
@@ -871,10 +947,10 @@ export function instanceFormat(device) {
   ]);
 }
 
-export function worldMaterial({ inst = false, push = false, fly = false, sway = 0, emissive = 0, doubleSided = false } = {}) {
-  const flags = { inst, push, fly };
+export function worldMaterial({ inst = false, push = false, fly = false, fall = false, sway = 0, emissive = 0, doubleSided = false, additive = false } = {}) {
+  const flags = { inst, push, fly, fall };
   const mat = new pc.ShaderMaterial({
-    uniqueName: `world_${+inst}${+push}${+fly}`,
+    uniqueName: `world_${+inst}${+push}${+fly}${+fall}`,
     vertexGLSL: worldVS_GLSL(flags),
     fragmentGLSL: WORLD_FS_GLSL,
     vertexWGSL: worldVS_WGSL(flags),
@@ -883,7 +959,13 @@ export function worldMaterial({ inst = false, push = false, fly = false, sway = 
   });
   mat.setParameter('uSway', sway);
   mat.setParameter('uEmissive', emissive);
-  mat.cull = doubleSided ? pc.CULLFACE_NONE : pc.CULLFACE_BACK;
+  mat.setParameter('uAdditive', additive ? 1 : 0);
+  if (additive) {
+    // light shafts: add light, leave the glyph-class alpha alone, never write depth
+    mat.blendState = new pc.BlendState(true, pc.BLENDEQUATION_ADD, pc.BLENDMODE_ONE, pc.BLENDMODE_ONE, pc.BLENDEQUATION_ADD, pc.BLENDMODE_ZERO, pc.BLENDMODE_ONE);
+    mat.depthWrite = false;
+  }
+  mat.cull = doubleSided || additive ? pc.CULLFACE_NONE : pc.CULLFACE_BACK;
   mat.update();
   return mat;
 }

@@ -1,6 +1,6 @@
 import * as pc from 'playcanvas';
 import { AsciiRenderer } from './ascii.js';
-import { World, WORLD } from './world.js';
+import { World, WORLD, SUN_DIR } from './world.js';
 import { Player } from './player.js';
 import { Input } from './input.js';
 import { QualityManager, LEVELS, detectTier, isMobile } from './quality.js';
@@ -90,7 +90,7 @@ export async function startGame(loader) {
   });
   const savedQ = store.get('quality', 'auto');
   let glyph = store.get('glyphSize', 's');
-  let asciiOn = store.get('ascii', '1') !== '0';
+  let asciiOn = store.get('ascii', '0') === '1'; // the painted view is the default; Scorched Sight is a toggle
   let palette = store.get('palette', 'color');
 
   const ascii = new AsciiRenderer(app);
@@ -147,15 +147,15 @@ export async function startGame(loader) {
     lantern: U('uLantern'), lanternCol: U('uLanternCol'), player: U('uPlayer'), fog: U('uFog'), moonSky: U('uMoonSky'),
     wet: U('uWet'), pond: U('uPond'), sway: U('uSway'), emissive: U('uEmissive'), haze: U('uHaze'),
   };
-  const moonDir = new Float32Array([-0.45, 0.72, -0.53]);
-  { const l = Math.hypot(...moonDir); for (let i = 0; i < 3; i++) moonDir[i] /= l; }
+  const moonDir = new Float32Array(SUN_DIR); // the low autumn sun (uniform keeps its old name)
   const v3 = { lantern: new Float32Array(4), lanternCol: new Float32Array(3), player: new Float32Array(3), fog: new Float32Array(4), moonSky: new Float32Array(3) };
   u.moonDir.setValue(moonDir);
-  // Mood: cold, dim moonlight; pale haze swallows the distance; the lantern is the only warmth.
-  const HAZE = [0.3, 0.355, 0.36];
-  u.moonCol.setValue(new Float32Array([0.3, 0.36, 0.44]));
-  u.skyAmb.setValue(new Float32Array([0.115, 0.15, 0.16]));
-  u.groundAmb.setValue(new Float32Array([0.025, 0.027, 0.03]));
+  // Mood: late-afternoon autumn. A low warm sun behind the trees, cool blue-teal mist in the
+  // distance and the shadows, and the lantern as the warmest light of all.
+  const HAZE = [0.4, 0.5, 0.53];
+  u.moonCol.setValue(new Float32Array([1.0, 0.74, 0.46]));
+  u.skyAmb.setValue(new Float32Array([0.24, 0.31, 0.34]));
+  u.groundAmb.setValue(new Float32Array([0.09, 0.075, 0.05]));
   u.haze.setValue(new Float32Array(HAZE));
   const monoU = U('uMono');
   monoU.setValue(palette === 'mono' ? 1 : 0);
@@ -332,7 +332,7 @@ export async function startGame(loader) {
   const syncAsciiBtn = () => {
     btnAscii.classList.toggle('on', asciiOn);
     btnAscii.setAttribute('aria-pressed', String(asciiOn));
-    btnAscii.textContent = asciiOn ? '[@] ASCII' : '[ ] ASCII';
+    btnAscii.textContent = asciiOn ? '[ @ ]' : '[ I ]';
   };
   const setAscii = (on) => {
     asciiOn = on;
@@ -365,7 +365,9 @@ export async function startGame(loader) {
     input.poll(dt);
     if (input.sightPressed) setAscii(!asciiOn);
     player.lanternWorldPos(lantern);
-    const playing = started && !paused;
+    // an open note on a standing stone pauses the world (monsters too) until it is folded
+    if (started && !paused && gameplay.reading) gameplay.readingFrame(dt, input);
+    const playing = started && !paused && !gameplay.reading;
     if (introT > 0 && playing) {
       introT = Math.max(0, introT - dt);
       const e = INTRO - introT;
@@ -384,7 +386,7 @@ export async function startGame(loader) {
       if (introT === 0) {
         player.dead = 0;
         toast(LINES.start, 4);
-        setTimeout(() => toast(touchUI ? LINES.tools : LINES.toolsKeys, 5), 4500);
+        if (touchUI) setTimeout(() => toast(LINES.tools, 5), 4500); // keyboard players have the keycap hint bar
       }
     }
     if (playing) {
@@ -422,7 +424,7 @@ export async function startGame(loader) {
     const fl = 0.35 + 0.65 * gameplay.flame;
     v3.lantern[0] = lantern.x; v3.lantern[1] = lantern.y; v3.lantern[2] = lantern.z; v3.lantern[3] = Math.max(0.01, gameplay.lightRadius);
     if (gameplay.lightWarm) {
-      v3.lanternCol[0] = 1.25 * flicker * fl; v3.lanternCol[1] = 0.66 * flicker * fl; v3.lanternCol[2] = 0.24 * flicker * fl;
+      v3.lanternCol[0] = 0.95 * flicker * fl; v3.lanternCol[1] = 0.55 * flicker * fl; v3.lanternCol[2] = 0.2 * flicker * fl;
     } else {
       // a moth on the glass: the flame shrinks to a tiny blue spark
       v3.lanternCol[0] = 0.25 * flicker; v3.lanternCol[1] = 0.4 * flicker; v3.lanternCol[2] = 0.9 * flicker;
@@ -520,7 +522,7 @@ export async function startGame(loader) {
         toast('For true fullscreen: Share → Add to Home Screen', 6);
       } else if (gameplay.hasSave || new URLSearchParams(location.search).has('autostart')) {
         toast(gameplay.hasSave ? 'The ember remembers where it was.' : LINES.start, 4);
-        setTimeout(() => toast(touchUI ? LINES.tools : LINES.toolsKeys, 5), 4500);
+        if (touchUI) setTimeout(() => toast(LINES.tools, 5), 4500);
       } else {
         introT = INTRO;
         player.dead = 1;

@@ -292,12 +292,12 @@ export function addFan(mb, root, outline, colFn) {
 export function pineMesh(device) {
   const mb = new MeshBuilder();
   const rng = mulberry32(11);
-  addCylinder(mb, { r0: 0.2, r1: 0.12, h: 1.4, seg: 6, colFn: () => rgba(0.08, 0.07, 0.06, CLS.GROUND, 0), capTop: false });
+  addCylinder(mb, { r0: 0.2, r1: 0.12, h: 1.4, seg: 6, colFn: () => rgba(0.16, 0.11, 0.08, CLS.GROUND, 0), capTop: false });
   const tiers = [[0.9, 1.45, 1.9], [1.9, 1.1, 1.6], [2.8, 0.75, 1.4]];
   for (const [y, r, h] of tiers) {
     addCylinder(mb, {
       y, r0: r, r1: 0, h, seg: 7, jitter: 0.25, rng,
-      colFn: (t) => rgba(0.05 + t * 0.03, 0.09 + t * 0.06, 0.07 + t * 0.03, CLS.FOLIAGE, (y + t * h) / 4.4),
+      colFn: (t) => rgba(0.07 + t * 0.04, 0.14 + t * 0.08, 0.12 + t * 0.05, CLS.FOLIAGE, (y + t * h) / 4.4),
       capBottom: true,
     });
   }
@@ -364,7 +364,7 @@ export function deadTreeMesh(device, seed = 31) {
 export function thornMesh(device) {
   const mb = new MeshBuilder();
   const rng = mulberry32(404);
-  const col = (t) => rgba(0.045 + t * 0.02, 0.042 + t * 0.018, 0.038 + t * 0.015, CLS.FOLIAGE, t * 0.6);
+  const col = (t) => rgba(0.1 + t * 0.05, 0.11 + t * 0.07, 0.05 + t * 0.02, CLS.FOLIAGE, t * 0.6);
   for (let i = 0; i < 7; i++) {
     const a = rng() * Math.PI * 2;
     const reach = 0.8 + rng() * 1.0;
@@ -390,7 +390,10 @@ export function rockMesh(device, seed = 5) {
   const rng = mulberry32(seed);
   addSphere(mb, {
     r: 0.7, sy: 0.62, segW: 7, segH: 5, jitter: 0.45, rng,
-    colFn: (ny) => rgba(0.19 + ny * 0.05, 0.2 + ny * 0.05, 0.19 + ny * 0.05, CLS.STONE, 0),
+    colFn: (ny) => {
+      const moss = Math.max(0, Math.min(1, (ny - 0.25) / 0.4));
+      return rgba(0.3 + (0.25 - 0.3) * moss, 0.3 + (0.33 - 0.3) * moss, 0.29 + (0.1 - 0.29) * moss, CLS.STONE, 0);
+    },
   });
   return mb.build(device);
 }
@@ -408,8 +411,8 @@ export function grassTuftMesh(device) {
     const w = 0.07;
     const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
     const tx = ox + Math.cos(a) * lean, tz = oz + Math.sin(a) * lean;
-    const base = rgba(0.03, 0.035, 0.02, CLS.GRASS, 0);
-    const tip = rgba(0.15, 0.2, 0.09, CLS.GRASS, 1);
+    const base = rgba(0.07, 0.1, 0.035, CLS.GRASS, 0);
+    const tip = rgba(0.24 + rng() * 0.08, 0.36, 0.1, CLS.GRASS, 1);
     const nx = Math.cos(a) * 0.3, nz = Math.sin(a) * 0.3;
     const b0 = mb.vert(ox - px, 0, oz - pz, nx, 1, nz, base);
     const b1 = mb.vert(ox + px, 0, oz + pz, nx, 1, nz, base);
@@ -421,15 +424,15 @@ export function grassTuftMesh(device) {
 
 export function fireflyMesh(device) {
   const mb = new MeshBuilder();
-  addSphere(mb, { r: 0.06, segW: 4, segH: 2, colFn: () => rgba(0.8, 0.8, 0.76, CLS.GLOW, 0) });
+  addSphere(mb, { r: 0.05, segW: 4, segH: 2, colFn: () => rgba(1.0, 0.72, 0.32, CLS.GLOW, 0) });
   return mb.build(device);
 }
 
 export function wispMesh(device) {
   const mb = new MeshBuilder();
-  addSphere(mb, { r: 0.3, segW: 6, segH: 4, colFn: (ny) => rgba(0.55 + ny * 0.1, 0.9, 1.0, CLS.GLOW, 0) });
+  addSphere(mb, { r: 0.18, segW: 6, segH: 4, colFn: (ny) => rgba(1.0, 0.72 + ny * 0.1, 0.32, CLS.GLOW, 0) });
   // trailing tail
-  addCylinder(mb, { y: -0.75, r0: 0.0, r1: 0.18, h: 0.6, seg: 5, colFn: (t) => rgba(0.3 + t * 0.3, 0.6 + t * 0.3, 0.9, CLS.GLOW, 0), capTop: false });
+  addCylinder(mb, { y: -0.6, r0: 0.0, r1: 0.1, h: 0.45, seg: 5, colFn: (t) => rgba(1.0, 0.45 + t * 0.25, 0.12, CLS.GLOW, 0), capTop: false });
   return mb.build(device);
 }
 
@@ -459,4 +462,109 @@ export function quadMesh(device) {
   mesh.setIndices([0, 1, 2, 0, 2, 3]);
   mesh.update(pc.PRIMITIVE_TRIANGLES);
   return mesh;
+}
+
+// ---------------------------------------------------------------- autumn glade
+
+/** A flat leaf card, both faces (the props shader culls back faces). */
+function leafCard(mb, cx, cy, cz, nx, ny, nz, size, col) {
+  // two in-plane axes perpendicular to the outward normal
+  let ax = -nz, ay = 0, az = nx;
+  if (Math.hypot(ax, az) < 0.2) { ax = 1; ay = 0; az = 0; }
+  const al = Math.hypot(ax, ay, az);
+  ax /= al; ay /= al; az /= al;
+  const bx = ny * az - nz * ay, by = nz * ax - nx * az, bz = nx * ay - ny * ax;
+  const p = (u, v) => [cx + (ax * u + bx * v) * size, cy + (ay * u + by * v) * size, cz + (az * u + bz * v) * size];
+  const q = [p(0, -0.6), p(0.55, 0), p(0, 0.75), p(-0.55, 0)];
+  const f = q.map((v) => mb.vert(v[0], v[1], v[2], nx, ny, nz, col));
+  const b = q.map((v) => mb.vert(v[0], v[1], v[2], -nx, -ny, -nz, col));
+  mb.tri(f[0], f[1], f[2]); mb.tri(f[0], f[2], f[3]);
+  mb.tri(b[0], b[2], b[1]); mb.tri(b[0], b[3], b[2]);
+}
+
+const MAPLE_PALETTES = [
+  [[0.86, 0.36, 0.08], [1.0, 0.62, 0.16]], // orange
+  [[0.7, 0.16, 0.06], [0.95, 0.4, 0.12]], // ember red
+  [[0.82, 0.5, 0.1], [1.0, 0.78, 0.26]], // gold
+];
+
+/** Autumn maple: a leaning trunk, three limbs, a crown of faceted leaf clusters fringed with leaf cards. */
+export function mapleMesh(device, seed = 41, palette = 0) {
+  const mb = new MeshBuilder();
+  const rng = mulberry32(seed);
+  const bark = (t) => rgba(0.17 - t * 0.04, 0.11 - t * 0.02, 0.08 - t * 0.01, CLS.GROUND, t * 0.3);
+  const lean = (rng() - 0.5) * 0.6;
+  // root flare + trunk
+  addLathe(mb, [[0.5, -0.2], [0.36, 0.15], [0.27, 0.55]], { seg: 7, jitter: 0.3, rng, colFn: () => bark(0) });
+  addTube(mb, [[0, 0.3, 0, 0.27], [lean * 0.3, 1.2, 0.05, 0.21], [lean * 0.7, 2.2, -0.05, 0.16], [lean, 3.0, 0.08, 0.11]], { seg: 7, subdiv: 2, colFn: bark });
+  const tops = [[lean, 3.2, 0.08]];
+  for (let k = 0; k < 3; k++) {
+    const a = (k / 3) * Math.PI * 2 + rng() * 1.2;
+    const o = [lean * 0.55, 1.9 + rng() * 0.5, 0];
+    const reach = 1.1 + rng() * 0.5;
+    const e = [o[0] + Math.cos(a) * reach, o[1] + 0.9 + rng() * 0.5, Math.sin(a) * reach];
+    addTube(mb, [[o[0], o[1], o[2], 0.11], [(o[0] + e[0]) / 2, o[1] + 0.6, e[2] / 2, 0.07], [e[0], e[1], e[2], 0.04]], { seg: 5, subdiv: 2, colFn: bark });
+    tops.push(e);
+  }
+  const [lo, hi] = MAPLE_PALETTES[palette % MAPLE_PALETTES.length];
+  const mix = (t, k) => [lo[0] + (hi[0] - lo[0]) * t * k, lo[1] + (hi[1] - lo[1]) * t * k, lo[2] + (hi[2] - lo[2]) * t * k];
+  const clusters = [[lean, 3.75, 0.05, 1.45]];
+  for (const t of tops.slice(1)) clusters.push([t[0], t[1] + 0.25, t[2], 0.95 + rng() * 0.35]);
+  for (let k = 0; k < 2; k++) {
+    const a = rng() * Math.PI * 2;
+    clusters.push([lean + Math.cos(a) * 0.9, 3.1 + rng() * 0.6, Math.sin(a) * 0.9, 0.85 + rng() * 0.3]);
+  }
+  for (const [x, y, z, r] of clusters) {
+    const k = 0.75 + rng() * 0.35; // per-cluster shade
+    addSphere(mb, {
+      x, y, z, r, sy: 0.78, segW: 7, segH: 5, jitter: 0.38, rng,
+      colFn: (ny) => { const c = mix(ny * 0.5 + 0.5, k); return rgba(c[0] * k, c[1] * k, c[2] * k, CLS.FOLIAGE, (y + ny * r) / 4.6); },
+    });
+    // a fringe of loose leaves breaks the blob outline
+    for (let i = 0; i < 12; i++) {
+      const th = rng() * Math.PI * 2, ph = Math.acos(rng() * 1.6 - 0.6);
+      const nx = Math.sin(ph) * Math.cos(th), ny = Math.cos(ph), nz = Math.sin(ph) * Math.sin(th);
+      const d = r * (0.95 + rng() * 0.2);
+      const c = mix(ny * 0.5 + 0.5 + rng() * 0.2, k);
+      leafCard(mb, x + nx * d, y + ny * d * 0.78, z + nz * d, nx, ny, nz, 0.32 + rng() * 0.12, rgba(c[0], c[1], c[2], CLS.FOLIAGE, (y + ny * r) / 4.6));
+    }
+  }
+  return mb.build(device);
+}
+
+/** A clump of little white star-flowers on thin stems (heads glow faintly). */
+export function flowerMesh(device, seed = 3) {
+  const mb = new MeshBuilder();
+  const rng = mulberry32(seed);
+  const stem = (t) => rgba(0.16, 0.26, 0.08, CLS.GRASS, t);
+  for (let i = 0; i < 4; i++) {
+    const a = rng() * Math.PI * 2, d = rng() * 0.22;
+    const bx = Math.cos(a) * d, bz = Math.sin(a) * d;
+    const h = 0.22 + rng() * 0.22;
+    const tx = bx + (rng() - 0.5) * 0.1, tz = bz + (rng() - 0.5) * 0.1;
+    const w = 0.012;
+    const s0 = mb.vert(bx - w, 0, bz, 0, 0, 1, stem(0)), s1 = mb.vert(bx + w, 0, bz, 0, 0, 1, stem(0)), s2 = mb.vert(tx, h, tz, 0, 0, 1, stem(1));
+    mb.tri(s0, s1, s2); mb.tri(s0, s2, s1);
+    // five-pointed star head, tipped toward the light
+    const petal = rgba(0.98, 0.95, 0.84, CLS.GLOW, 1);
+    const heart = rgba(1.0, 0.82, 0.4, CLS.GLOW, 1);
+    const tilt = 0.35, R = 0.075 + rng() * 0.03, r = R * 0.38;
+    const c = mb.vert(tx, h, tz, Math.sin(tilt), Math.cos(tilt), 0, heart);
+    const ring = [];
+    for (let k = 0; k < 10; k++) {
+      const ang = (k / 10) * Math.PI * 2 + a;
+      const rr = k % 2 ? r : R;
+      const px = Math.cos(ang) * rr, pz = Math.sin(ang) * rr;
+      ring.push(mb.vert(tx + px, h + px * Math.sin(tilt) * 0.6, tz + pz, Math.sin(tilt), Math.cos(tilt), 0, petal));
+    }
+    for (let k = 0; k < 10; k++) { mb.tri(c, ring[(k + 1) % 10], ring[k]); mb.tri(c, ring[k], ring[(k + 1) % 10]); }
+  }
+  return mb.build(device);
+}
+
+/** One small autumn leaf (floating on the pond, or falling with the 'fall' shader). */
+export function leafMesh(device, col = [0.95, 0.45, 0.1]) {
+  const mb = new MeshBuilder();
+  leafCard(mb, 0, 0, 0, 0, 1, 0, 0.16, rgba(col[0], col[1], col[2], CLS.FOLIAGE, 0));
+  return mb.build(device);
 }

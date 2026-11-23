@@ -5,7 +5,7 @@ import { worldMaterial } from './shaders.js';
 import { wispMesh, emberCoreMesh, heartMesh } from './meshes.js';
 import { LAYOUT, ITEMS, SPAWNS, LINES, regionOf } from './story.js';
 import { WORLD, SHRINE_Y } from './world.js';
-import { VeilMother, AshHound, GloomMoth, BellWarden, initMonsterMaterials } from './monsters.js';
+import { VeilMother, AshHound, GloomMoth, BellWarden, MireLurker, initMonsterMaterials } from './monsters.js';
 import * as sfx from './audio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -34,7 +34,7 @@ export class Gameplay {
     // ------------------------------------------------ state (saved)
     this.s = {
       cp: 0, items: [], chimes: false, valves: [false, false], arch: false,
-      beacons: [false, false, false, false], carried: 0,
+      beacons: [false, false, false, false], carried: 0, read: [],
     };
     // ------------------------------------------------ transient
     this.flame = 1;
@@ -56,7 +56,7 @@ export class Gameplay {
     this.said = new Set();
     this.paused = false;
     this.fogScale = 1;
-    this.haze = new Float32Array([0.3, 0.355, 0.36]); // cold teal-grey
+    this.haze = new Float32Array([0.4, 0.5, 0.53]); // blue-teal autumn mist
     this.ringGain = 1;
     this.deathCount = {};
     this.hintCount = {};
@@ -97,6 +97,7 @@ export class Gameplay {
     this.hounds = SPAWNS.hounds.map((h) => new AshHound(app, layers, h));
     this.moths = SPAWNS.moths.map((m) => new GloomMoth(app, layers, m, world));
     this.warden = new BellWarden(app, layers);
+    this.lurker = new MireLurker(app, layers);
     for (const [x, z] of SPAWNS.sunbeamsNorth) props.makeBeam(x, z, 'north');
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
@@ -107,8 +108,12 @@ export class Gameplay {
       objective: $('objective'),
       embers: $('embers'), flame: $('flameBar'), prompt: $('prompt'), fade: $('fade'),
       marks: $('marks'), ending: $('ending'), endText: $('endText'), endArt: $('endArt'),
+      slots: [...document.querySelectorAll('#slots i')], flameFill: document.querySelector('#flameBar b'),
+      hints: $('hints'), hintE: $('hintEText'),
     };
+    this.hudCache = { slots: -1, flame: -1, hint: '' };
     this.marks = this.ui.marks.getContext('2d');
+    this.setupNotes();
     this.load();
   }
 
@@ -159,6 +164,8 @@ export class Gameplay {
     this.s.valves.forEach((d, i) => { if (d) { this.props.valves[i].done = true; this.props.valves[i].progress = 1; } });
     if (this.s.valves[0] && this.s.valves[1]) { this.props.causeway.up = 1; this.world.causewayUp = 1; }
     this.s.beacons.forEach((b, i) => { if (b) this.placeCore(i, true); });
+    if (!Array.isArray(this.s.read)) this.s.read = [];
+    for (const st of this.props.stones) if (this.s.read.includes(st.id)) this.markRead(st);
     const cp = LAYOUT.checkpoints[this.s.cp] || LAYOUT.checkpoints[0];
     this.player.teleport(cp.x, cp.z, Math.PI + cp.yaw);
     this.cam.yaw = cp.yaw;
@@ -345,6 +352,81 @@ export class Gameplay {
     }
   }
 
+  // ================================================================ old notes on the standing stones
+  setupNotes() {
+    this.reading = null; // the stone whose note is open (the world pauses while it is)
+    this.readT = 0;
+    const n = this.ui.note = $('note');
+    this.ui.noteTitle = $('noteTitle');
+    this.ui.noteBody = $('noteBody');
+    this.ui.noteArt = $('noteArt');
+    $('noteFold').textContent = this.isTouch ? 'tap to fold the paper' : 'E / Esc / click: fold the paper';
+    n.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.closeNote(); });
+    // registered before the settings key, so Esc folds the paper instead of opening the menu
+    window.addEventListener('keydown', (e) => {
+      if (!this.reading) return;
+      if (e.code === 'Escape' || e.code === 'KeyE' || e.code === 'Enter' || e.code === 'NumpadEnter') {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        this.closeNote();
+      }
+    }, true);
+  }
+
+  openNote(st) {
+    if (this.reading || this.dying || this.ending) return;
+    this.reading = st;
+    this.readT = 0;
+    const u = this.ui;
+    u.noteTitle.textContent = st.title;
+    u.noteBody.replaceChildren(...st.body.map((line) => {
+      const el = document.createElement('p');
+      el.textContent = line;
+      if (/^\d\./.test(line)) el.className = 'step';
+      return el;
+    }));
+    u.noteArt.textContent = st.art ? st.art.replace(/^\r?\n/, '') : '';
+    u.noteArt.hidden = !st.art;
+    u.note.hidden = false;
+    u.note.classList.remove('open');
+    void u.note.offsetWidth; // restart the unfold animation
+    u.note.classList.add('open');
+    u.prompt.hidden = true;
+    sfx.play('paper', undefined, { vol: 0.9, wet: 0.1 });
+    if (!st.read) { this.markRead(st); this.s.read.push(st.id); this.save(); }
+  }
+
+  closeNote() {
+    if (!this.reading || this.readT < 0.35) return;
+    this.reading = null;
+    this.ui.note.hidden = true;
+    sfx.play('paper', undefined, { vol: 0.5, wet: 0.1 });
+  }
+
+  /** Called by game.js every frame while a note is open (the world is paused). */
+  readingFrame(dt, input) {
+    this.readT += dt;
+    if (input.staffPressed || input.guidePressed) this.closeNote();
+  }
+
+  markRead(st) {
+    st.read = true;
+    st.runeMat.setParameter('uEmissive', 0.8); // the rune dims once its note is read
+  }
+
+  /** Unread notes open as you walk up; read ones open again with the staff. */
+  updateStones(p) {
+    let near = null;
+    for (const st of this.props.stones) {
+      const d = dist(st.x, st.z, p.x, p.z);
+      if (d < 2.3) {
+        near = st;
+        if (!st.inside) { st.inside = true; if (!st.read) this.openNote(st); }
+      } else if (d > 3.4) st.inside = false;
+    }
+    return near;
+  }
+
   // ================================================================ guidance
   /** Where the story wants the player next (never shown as a marker, only hinted). */
   objective() {
@@ -480,7 +562,10 @@ export class Gameplay {
         this.save();
       }
     } else P.crankT = 0;
-    if (input.staffPressed && !cranking && !valve) this.strike();
+    const stone = this.updateStones(p);
+    if (stone && !valve && input.staffPressed) this.openNote(stone);
+    else if (input.staffPressed && !cranking && !valve) this.strike();
+    this.nearStone = stone;
     // aim marker for the staff
     const aim = valve || this.dying ? null : this.aim();
     const at = aim && (aim.chime || aim.target);
@@ -559,7 +644,7 @@ export class Gameplay {
     this.fogScale = 1 + prog * 0.45 + tear * 0.9;
     // the fog pales (and loses its teal) as the white sky breaks through
     const hz = prog * 0.08 + tear * 0.28;
-    this.haze[0] = 0.3 + hz * 1.15; this.haze[1] = 0.355 + hz; this.haze[2] = 0.36 + hz;
+    this.haze[0] = 0.4 + hz * 1.15; this.haze[1] = 0.5 + hz * 0.8; this.haze[2] = 0.53 + hz * 0.7;
 
     // ---------------- flame: regen, light radius, colour
     if (this.time - this.lastHurt > 3 && this.flame < 1) this.flame = Math.min(1, this.flame + dt * 0.05);
@@ -650,7 +735,7 @@ export class Gameplay {
     const prev = a.open;
     a.open += ((this.archHold > 0 ? 1 : 0) - a.open) * Math.min(1, dt * (this.archHold > 0 ? 1.3 : 2.5));
     if (prev < 0.1 && a.open >= 0.1) { this.say('archOpen'); sfx.play('gate', { x: LAYOUT.wallC.archX, z: LAYOUT.wallC.z }, { vol: 0.7 }); }
-    a.port.setLocalPosition(0, a.open * 4.2, 0);
+    a.port.setLocalPosition(0, -a.open * 4.6, 0); // the iron gate sinks into the ground
     this.world.setWall('C-arch', a.open < 0.75);
     void want;
     // beacons: all four placed -> ignite, the exit gate rises, the warden charges
@@ -715,6 +800,7 @@ export class Gameplay {
     if (m.alert > 0.3 && m.churn <= 0) { sfx.play('churn', m, { vol: 0.6 + m.alert }); m.churn = 2.2; }
     m.churn -= dt;
     if (inWater) this.g.tension = Math.max(this.g.tension, m.alert);
+    this.lurker.follow(m, p, this.time);
     if (m.alert >= 1 && inWater) {
       sfx.play('churn', m, { vol: 1.6 });
       if (!this.mireTaught) {
@@ -801,19 +887,37 @@ export class Gameplay {
     const cores = placed + this.s.carried;
     const embersText = `EMBERS ${cores}/4`;
     if (u.embers.textContent !== embersText) u.embers.textContent = embersText;
-    const n = 12, f = Math.max(0, Math.round(this.flame * n));
-    const bar = `[${'#'.repeat(f)}${'.'.repeat(n - f)}]`;
-    if (u.flame.textContent !== bar) u.flame.textContent = bar;
-    u.flame.classList.toggle('low', this.flame < 0.35);
+    // four ember slots and a thin flame line (only touched when they change)
+    if (this.hudCache.slots !== cores) {
+      this.hudCache.slots = cores;
+      u.slots.forEach((el, i) => el.classList.toggle('on', i < cores));
+    }
+    const f = Math.round(Math.max(0, this.flame) * 50) / 50;
+    if (this.hudCache.flame !== f) {
+      this.hudCache.flame = f;
+      u.flameFill.style.transform = `scaleX(${f})`;
+      u.flame.setAttribute('aria-valuenow', String(Math.round(f * 100)));
+      u.flame.classList.toggle('low', this.flame < 0.35);
+    }
     let prompt = '';
     if (!this.dying && !this.ending) {
       if (valve) prompt = this.isTouch ? 'HOLD STAFF: crank the valve' : 'HOLD E: crank the valve';
+      else if (this.nearStone) prompt = this.isTouch ? 'STAFF: read the old note' : 'E: read the old note';
       else if (beacon && this.s.carried === 0) prompt = 'An empty stone lantern';
       else if (this.aimKind === 'chime' && !this.s.chimes) prompt = this.isTouch ? 'STAFF: strike the chime' : 'E: strike the chime';
       else if (this.aimKind && this.aimKind !== 'chime') prompt = (this.isTouch ? 'STAFF' : 'E') + (this.aimKind === 'bell' ? ': ring the fallen bell' : this.aimKind === 'metal' ? ': strike the iron' : ': throw a sound at the stone');
       else if (this.mercyT > 2) prompt = '...';
     }
-    if (u.prompt.textContent !== prompt) { u.prompt.textContent = prompt; u.prompt.hidden = !prompt; }
+    // keyboard: the action rides in the keycap hint bar ("E to crank the valve"); touch: a plain line
+    if (!this.isTouch) {
+      const m = /^(HOLD )?E: (.*)$/.exec(prompt);
+      const hint = m ? `${m[1] ? 'hold to ' : 'to '}${m[2]}` : prompt ? prompt : 'to interact';
+      if (this.hudCache.hint !== hint) { this.hudCache.hint = hint; u.hintE.textContent = m || !prompt ? hint : 'to interact'; }
+      const extra = m ? '' : prompt; // prompts without a key (e.g. "An empty stone lantern")
+      if (u.prompt.textContent !== extra) { u.prompt.textContent = extra; u.prompt.hidden = !extra; }
+      u.hints.classList.toggle('active', !!m);
+      u.hints.hidden = !!(this.dying || this.ending);
+    } else if (u.prompt.textContent !== prompt) { u.prompt.textContent = prompt; u.prompt.hidden = !prompt; }
   }
 
   drawMarks(asciiOn) {
@@ -867,6 +971,8 @@ export class Gameplay {
         put(R.x + Math.cos(a) * R.r, y, R.z + Math.sin(a) * R.r, Math.cos(a) < -0.3 ? '(' : Math.cos(a) > 0.3 ? ')' : '-', `rgba(240,162,74,${Math.min(1, R.a).toFixed(2)})`, 12);
       }
     }
+    // unread notes on the standing stones
+    for (const st of this.props.stones) if (!st.read && near(st.x, st.z, 28)) put(st.x, st.y + 2.7, st.z, '?', '#f6d9a8', 16);
     // beacons: empty (+) / placed (*)
     for (const b of this.props.beacons) if (near(b.x, b.z)) put(b.x, SHRINE_Y + 2.9, b.z, b.placed ? '*' : '+', '#f0a24a', 15);
   }
