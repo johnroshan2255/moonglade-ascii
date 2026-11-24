@@ -28,6 +28,22 @@ export class MeshBuilder {
 
   tri(a, b, c) { this.i.push(a, b, c); }
 
+  /** Appends another builder's geometry (fewer meshes = fewer draw calls). */
+  append(o) {
+    const base = this.count;
+    for (let k = 0; k < o.p.length; k++) this.p.push(o.p[k]);
+    for (let k = 0; k < o.n.length; k++) this.n.push(o.n[k]);
+    for (let k = 0; k < o.c.length; k++) this.c.push(o.c[k]);
+    for (let k = 0; k < o.i.length; k++) this.i.push(o.i[k] + base);
+    return this;
+  }
+
+  /** Flags every vertex as self-lit (glow class + full sway weight; see the world vertex shader). */
+  selfLit() {
+    for (let k = 3; k < this.c.length; k += 4) this.c[k] = CLS.GLOW * 32 + 31;
+    return this;
+  }
+
   build(device) {
     const mesh = new pc.Mesh(device);
     mesh.setPositions(this.p);
@@ -287,6 +303,29 @@ export function addFan(mb, root, outline, colFn) {
   for (let i = 0; i < outline.length - 1; i++) mb.tri(c, b + i, b + i + 1);
 }
 
+/**
+ * Unwelds a mesh so every triangle gets its own flat normal: crisp chiselled facets.
+ * jitter > 0 also varies each facet's shade a little, like planes of slate catching the light.
+ */
+export function faceted(mb, jitter = 0, rng = Math.random) {
+  const o = new MeshBuilder();
+  const P = mb.p, C = mb.c, I = mb.i;
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t], b = I[t + 1], c = I[t + 2];
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2];
+    const vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz);
+    if (l < 1e-12) continue; // degenerate (tube tips)
+    nx /= l; ny /= l; nz /= l;
+    const k = jitter ? 1 + (rng() - 0.5) * 2 * jitter : 1;
+    const v = [a, b, c].map((i) => o.vert(P[i * 3], P[i * 3 + 1], P[i * 3 + 2], nx, ny, nz,
+      [Math.min(255, C[i * 4] * k), Math.min(255, C[i * 4 + 1] * k), Math.min(255, C[i * 4 + 2] * k), C[i * 4 + 3]]));
+    o.tri(v[0], v[1], v[2]);
+  }
+  return o;
+}
+
 // ---------------------------------------------------------------- props
 
 export function pineMesh(device) {
@@ -318,8 +357,11 @@ export function roundTreeMesh(device) {
   return mb.build(device);
 }
 
-/** Gnarled leafless tree: a recursively branching, tapering silhouette against the haze. */
-export function deadTreeMesh(device, seed = 31) {
+/**
+ * Gnarled leafless tree: a recursively branching, tapering silhouette against the haze.
+ * lite = the far LOD: two levels of branching and coarse tubes (a few hundred triangles).
+ */
+export function deadTreeMesh(device, seed = 31, lite = false) {
   const mb = new MeshBuilder();
   const rng = mulberry32(seed);
   const H = 9;
@@ -337,8 +379,8 @@ export function deadTreeMesh(device, seed = 31) {
       pts.push([q[0], q[1], q[2], r * (1 - (i / steps) * 0.72)]);
     }
     const sp = pts;
-    addTube(mb, sp, { seg: depth === 0 ? 8 : depth === 1 ? 5 : 4, subdiv: depth === 0 ? 3 : 2, colFn: (t) => bark(sp[0][1] + (sp[sp.length - 1][1] - sp[0][1]) * t) });
-    if (depth >= 3) return;
+    addTube(mb, sp, { seg: lite ? (depth === 0 ? 5 : 3) : depth === 0 ? 8 : depth === 1 ? 5 : 4, subdiv: lite ? 1 : depth === 0 ? 3 : 2, colFn: (t) => bark(sp[0][1] + (sp[sp.length - 1][1] - sp[0][1]) * t) });
+    if (depth >= (lite ? 2 : 3)) return;
     const kids = depth === 0 ? 4 : 2 + Math.floor(rng() * 2);
     for (let k = 0; k < kids; k++) {
       const at = depth === 0 ? 0.35 + (k / kids) * 0.6 : 0.4 + rng() * 0.55;
@@ -351,8 +393,8 @@ export function deadTreeMesh(device, seed = 31) {
     }
   }
   // flared, root-gripped base
-  addLathe(mb, [[0.62, -0.2], [0.5, 0.1], [0.36, 0.45], [0.3, 0.9]], { seg: 8, jitter: 0.35, rng, colFn: () => bark(0) });
-  for (let i = 0; i < 4; i++) {
+  addLathe(mb, [[0.62, -0.2], [0.5, 0.1], [0.36, 0.45], [0.3, 0.9]], { seg: lite ? 5 : 8, jitter: 0.35, rng, colFn: () => bark(0) });
+  for (let i = 0; i < (lite ? 0 : 4); i++) {
     const a = (i / 4) * Math.PI * 2 + rng();
     addTube(mb, [[0, 0.5, 0, 0.16], [Math.cos(a) * 0.6, 0.1, Math.sin(a) * 0.6, 0.12], [Math.cos(a) * 1.1, -0.15, Math.sin(a) * 1.1, 0.05]], { seg: 5, colFn: () => bark(0) });
   }
@@ -360,12 +402,12 @@ export function deadTreeMesh(device, seed = 31) {
   return mb.build(device);
 }
 
-/** Bramble: arching thorny vines that knot together into a wall. */
-export function thornMesh(device) {
+/** Bramble: arching thorny vines that knot together into a wall. lite = the far LOD (bare arcs). */
+export function thornMesh(device, lite = false) {
   const mb = new MeshBuilder();
   const rng = mulberry32(404);
   const col = (t) => rgba(0.045 + t * 0.02, 0.042 + t * 0.018, 0.038 + t * 0.015, CLS.FOLIAGE, t * 0.6);
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < (lite ? 5 : 7); i++) {
     const a = rng() * Math.PI * 2;
     const reach = 0.8 + rng() * 1.0;
     const h = 0.7 + rng() * 1.0;
@@ -375,8 +417,8 @@ export function thornMesh(device) {
       const t = k / 5;
       pts.push([ox + Math.cos(a) * reach * t + (rng() - 0.5) * 0.15, Math.sin(t * Math.PI) * h, oz + Math.sin(a) * reach * t + (rng() - 0.5) * 0.15, 0.045 * (1 - t * 0.6)]);
     }
-    addTube(mb, pts, { seg: 4, subdiv: 2, colFn: col });
-    for (let k = 1; k < 5; k++) {
+    addTube(mb, pts, { seg: lite ? 3 : 4, subdiv: lite ? 1 : 2, colFn: col });
+    for (let k = 1; k < (lite ? 0 : 5); k++) {
       const p = pts[k];
       const ta = rng() * Math.PI * 2;
       addTube(mb, [[p[0], p[1], p[2], 0.02], [p[0] + Math.cos(ta) * 0.14, p[1] + 0.05, p[2] + Math.sin(ta) * 0.14, 0.0]], { seg: 3, subdiv: 1, colFn: () => col(0.8) });

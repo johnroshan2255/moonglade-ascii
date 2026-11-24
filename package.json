@@ -5,7 +5,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "itch": "vite build && node scripts/package-itch.mjs"
+    "itch": "vite build && node scripts/package-itch.mjs",
+    "models": "blender -b --factory-startup -P tools/blender/build_models.py -- public/models/glade.hwm"
   },
   "description": "ASCII-rendered 3D exploration game built on PlayCanvas (WebGL2 + WebGPU)",
   "dependencies": {

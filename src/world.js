@@ -1,21 +1,76 @@
 // World generation + culling/LOD bookkeeping.
 //
-// Culling strategy
-//  - Everything static is split into spatial clusters (terrain 32 m, props 32 m, grass 16 m).
-//    Each cluster is ONE mesh instance (hardware instanced where it repeats), with a tight AABB,
-//    so the engine's per-camera frustum culling rejects whole clusters at once.
-//  - On top of that we do our own distance culling every frame (cheap 2D test against the
-//    camera focus) so far clusters never even reach the frustum test, and the fog hides the cut.
-//  - Grass LOD: instances are stored shuffled, so drawing the first N of them is a uniform
-//    thinning. N shrinks with distance and with the quality level.
-//  - The reflection camera only sees a dedicated layer holding props near the pond, and is
-//    switched off entirely when the pond is outside the main camera frustum.
+// Drawing strategy
+//  A frame's cost in a browser is mostly its number of draw calls (each one is validated and
+//  translated by the GPU process), then its triangles. So everything that repeats is drawn as a
+//  handful of BATCHES: one instanced draw per mesh, whose instance list is rebuilt on the CPU
+//  when the camera has moved or turned enough to matter (not every frame).
+//  - Culling: an instance is in a batch only if the fog has not swallowed it yet (its distance
+//    from the camera is inside the fog's reach) AND it is inside the view cone, widened just
+//    enough that small turns need no rebuild. What is not on screen is not drawn.
+//  - LOD, props: every kind has a light mesh and, where one exists, a detailed one (the boulders
+//    authored in Blender, the full bare tree, the full bramble). Instances near the focus go to
+//    the "near" batch, the rest to the "far" batch; look-alikes share one far batch.
+//  - LOD, grass: stored per 16 m chunk in shuffled order, so taking the first N of a chunk is an
+//    even thinning; N shrinks with distance and with the quality level.
+//  - The terrain is four big chunks, drawn last so whatever stands on it hides it first.
+//  - The lake's mirror gets its own small fixed set of the light meshes round the shore.
 
 import * as pc from 'playcanvas';
 import { CLS, worldMaterial, waterMaterial, instanceFormat } from './shaders.js';
 import { MeshBuilder, rgba, addBox, pineMesh, roundTreeMesh, deadTreeMesh, rockMesh, grassTuftMesh, fireflyMesh, thornMesh } from './meshes.js';
+import { modelMesh } from './models.js';
 import { fbm, mulberry32, smoothstep, lerp, clamp, distToSegment, hash2 } from './noise.js';
-import { LAYOUT, PATHS } from './story.js';
+import { LAYOUT, PATHS, STONES } from './story.js';
+
+const PROP_KINDS = ['pine', 'round', 'dead', 'dead2', 'rock', 'rock2', 'rock3', 'thorn'];
+
+/**
+ * One instanced draw call whose instance list is rebuilt on the CPU (see the notes above).
+ * Instance layout: (x, y, z, scale), (rotY, tint, seed, unused): 8 floats, as instanceFormat().
+ */
+class Batch {
+  constructor(world, name, mesh, mat, capacity, layerIds, order = 0) {
+    this.name = name;
+    this.cap = Math.max(1, capacity);
+    this.data = new Float32Array(this.cap * 8);
+    this.n = 0;
+    this.vb = new pc.VertexBuffer(world.device, instanceFormat(world.device), this.cap, { usage: pc.BUFFER_DYNAMIC });
+    this.mi = new pc.MeshInstance(mesh, mat);
+    this.mi.setInstancing(this.vb); // no engine culling: the instance list is already culled
+    this.mi.cull = false;
+    this.mi.drawOrder = order;
+    this.mi.visible = false;
+    const e = new pc.Entity(name);
+    e.addComponent('render', { meshInstances: [this.mi], castShadows: false, receiveShadows: false, layers: layerIds });
+    world.root.addChild(e);
+    world.batches.push(this);
+  }
+
+  reset() { this.n = 0; }
+
+  /** Appends the instance at float offset `off` of `src`. */
+  add(src, off) {
+    if (this.n >= this.cap) return;
+    this.data.set(src.subarray(off, off + 8), this.n * 8);
+    this.n++;
+  }
+
+  /** Appends the first `count` instances of `src` in one block copy. */
+  addRun(src, count) {
+    const c = Math.min(count, this.cap - this.n);
+    if (c <= 0) return;
+    this.data.set(src.subarray(0, c * 8), this.n * 8);
+    this.n += c;
+  }
+
+  flush() {
+    this.mi.visible = this.n > 0;
+    if (!this.n) return;
+    this.vb.setData(this.data.buffer);
+    this.mi.instancingCount = this.n;
+  }
+}
 
 export const WORLD = {
   half: 80, // world spans -80..80
@@ -164,10 +219,19 @@ export class World {
     this.colliders = new ColliderGrid();
     this.walls = wallLines().map((w) => ({ ...w, on: true, r: 0.9 }));
     this.causewayUp = 0; // 0..1, set by the lake-valve puzzle
-    this.clusters = []; // { mi, x, z, radius, base, kind }
+    this.batches = []; // every Batch (dynamic and fixed)
+    this.clusters = this.batches; // (the stats overlay counts these)
+    this.propSets = []; // { kind, data, far: Batch, near: Batch|null, reach }
+    this.grassSet = null; // { batch, chunks: [{ x, z, r, data, n }] }
+    this.view = { x: 1e9, z: 1e9, cx: 1e9, cz: 1e9, yaw: 99, dx: 0, dz: -1, tan: 1.5 };
+    this.dirty = true; // rebuild the batches on the next update
+    this.camera = null; // the main camera component (for its field of view)
+    this.fogEnd = 40; // metres from the camera at which the fog has swallowed everything (set per frame)
+    this.builtFog = 0;
     this.grassDensity = 1;
     this.fireflyCount = 0;
     this.drawDistance = 80;
+    this.lodDistance = 10; // metres: detailed meshes inside, light ones beyond (quality-driven)
     this.visibleClusters = 0;
     this.rocks = []; // [x, z, size] strike targets for the staff
     this.root = new pc.Entity('world');
@@ -201,12 +265,10 @@ export class World {
     ];
   }
 
-  /** Loading-screen shader warm-up: draw every cluster at full density once. */
+  /** Loading-screen shader warm-up: every batch draws everything it has, once. */
   showEverything() {
-    for (const c of this.clusters) {
-      c.mi.visible = true;
-      if (c.kind === 'grass') c.mi.instancingCount = c.base;
-    }
+    this.rebuild(true);
+    this.dirty = true; // back to the real view on the next update
     this.fireflies.mi.visible = true;
     this.fireflies.mi.instancingCount = this.fireflies.max;
   }
@@ -294,6 +356,7 @@ export class World {
     if (L.plates.some((c) => near(c, 5))) return true;
     if (near({ x: L.wallC.archX, z: L.wallC.z }, 6) || near({ x: L.wallA.gateX, z: L.wallA.z }, 5)) return true;
     if (near(L.ironChime, 4) || near(L.exitGate, 8)) return true;
+    if (STONES.some((s) => near(s, 2.6))) return true;
     if (distToSegment(x, z, L.shrine.x, L.shrine.z, L.exitGate.x - 6, L.exitGate.z - 6) < 5) return true;
     return false;
   }
@@ -339,18 +402,17 @@ export class World {
   }
 
   buildTerrain() {
-    const size = 32;
-    const step = 1;
-    const chunks = (WORLD.half * 2) / size;
+    // four big chunks (the engine's frustum test drops the ones behind the camera)
+    const size = WORLD.half;
     const mis = [];
-    for (let cz = 0; cz < chunks; cz++) {
-      for (let cx = 0; cx < chunks; cx++) {
+    for (let cz = 0; cz < 2; cz++) {
+      for (let cx = 0; cx < 2; cx++) {
         const mb = new MeshBuilder();
         const x0 = -WORLD.half + cx * size, z0 = -WORLD.half + cz * size;
-        const n = size / step + 1;
+        const n = size + 1;
         for (let iz = 0; iz < n; iz++) {
           for (let ix = 0; ix < n; ix++) {
-            const x = x0 + ix * step, z = z0 + iz * step;
+            const x = x0 + ix, z = z0 + iz;
             const h = this.hf.at(x, z);
             const dx = this.hf.at(x + 1, z) - this.hf.at(x - 1, z);
             const dz = this.hf.at(x, z + 1) - this.hf.at(x, z - 1);
@@ -366,8 +428,8 @@ export class World {
           }
         }
         const mi = new pc.MeshInstance(mb.build(this.device), this.mats.terrain);
+        mi.drawOrder = 100; // drawn last: whatever stands on the ground hides it first (no wasted shading)
         mis.push(mi);
-        this.clusters.push({ mi, x: x0 + size / 2, z: z0 + size / 2, radius: size * 0.71, base: 0, kind: 'terrain' });
       }
     }
     this.addEntity('terrain', mis, false);
@@ -390,6 +452,7 @@ export class World {
     mesh.setIndices(mb.i);
     mesh.update(pc.PRIMITIVE_TRIANGLES);
     const mi = new pc.MeshInstance(mesh, this.mats.water);
+    mi.drawOrder = 90; // before the terrain, so the lake bed under it is never shaded
     const e = this.addEntity('water', [mi], false);
     e.setPosition(x, WORLD.waterY, z);
     this.water = { mi, sphere: new pc.BoundingSphere(new pc.Vec3(x, WORLD.waterY, z), R) };
@@ -408,21 +471,17 @@ export class World {
   // --------------------------------------------------------------- trees + rocks
   buildProps() {
     const rng = mulberry32(1234);
-    const size = 32;
-    const chunks = (WORLD.half * 2) / size;
-    const meshes = { pine: pineMesh(this.device), round: roundTreeMesh(this.device), dead: deadTreeMesh(this.device, 31), dead2: deadTreeMesh(this.device, 77), rock: rockMesh(this.device) };
-    const buckets = new Map();
-    this.bucketAdd = (kind, x, ...rest) => {
-      const z = rest[1];
-      const cx = clamp(Math.floor((x + WORLD.half) / size), 0, chunks - 1);
-      const cz = clamp(Math.floor((z + WORLD.half) / size), 0, chunks - 1);
-      const k = cz * chunks + cx;
-      let b = buckets.get(k);
-      if (!b) buckets.set(k, (b = { pine: [], round: [], dead: [], dead2: [], rock: [], thorn: [] }));
-      b[kind].push(x, ...rest);
-    };
-    this.propBuckets = buckets;
-    this.propMeshes = meshes;
+    const dev = this.device;
+    // Every kind has a light mesh (the far LOD; look-alikes share one, see flushProps) ...
+    this.propMeshes = { pine: pineMesh(dev), round: roundTreeMesh(dev), dead: deadTreeMesh(dev, 31, true), rock: rockMesh(dev) };
+    // ... and some a detailed one for near the camera: the boulders authored in Blender (when
+    // the model pack is loaded) and the full bare trees.
+    this.propMeshesHi = { dead: deadTreeMesh(dev, 31), dead2: deadTreeMesh(dev, 77), rock: modelMesh(dev, 'rock_a'), rock2: modelMesh(dev, 'rock_b'), rock3: modelMesh(dev, 'rock_c') };
+    this.propInst = {};
+    for (const pk of PROP_KINDS) this.propInst[pk] = [];
+    this.bucketAdd = (kind, x, ...rest) => { this.propInst[kind].push(x, ...rest); };
+    const pick = mulberry32(4321); // which of the three boulders (its own stream: the layout stays as it was)
+    this.rockKind = () => ['rock', 'rock2', 'rock3'][Math.floor(pick() * 3)];
     const ok = (x, z, clearPath) => {
       if (Math.hypot(x, z) > 77) return false;
       if (this.nearPond(x, z, 3.5)) return false;
@@ -464,7 +523,7 @@ export class World {
       }
       if (Math.hypot(x, z) > 77) continue;
       const s = 0.5 + rng() * 1.3;
-      this.bucketAdd('rock', x, this.hf.at(x, z) - 0.15 * s, z, s, rng() * Math.PI * 2, 0.8 + rng() * 0.4, rng(), 0);
+      this.bucketAdd(this.rockKind(), x, this.hf.at(x, z) - 0.15 * s, z, s, rng() * Math.PI * 2, 0.8 + rng() * 0.4, rng(), 0);
       this.colliders.add(x, z, 0.55 * s);
       if (s > 0.8) this.rocks.push([x, z, s]);
     }
@@ -473,8 +532,8 @@ export class World {
   /** Bramble walls: thorn thickets + deadfall along each wall line, plus closing tree rows. */
   buildWalls() {
     const rng = mulberry32(808);
-    const thorn = thornMesh(this.device);
-    this.propMeshes.thorn = thorn;
+    this.propMeshes.thorn = thornMesh(this.device, true);
+    this.propMeshesHi.thorn = thornMesh(this.device);
     for (const w of this.walls) {
       if (w.gate) continue;
       const [ax, az] = w.a, [bx, bz] = w.b;
@@ -500,41 +559,50 @@ export class World {
       if (Math.abs(i) < 3) continue;
       const tx = g.x + Math.cos(g.rot + Math.PI / 2) * i * 1.4, tz = g.z + Math.sin(g.rot + Math.PI / 2) * i * 1.4;
       const s = 2.2 + rng() * 1.4;
-      this.bucketAdd('rock', tx, this.hf.at(tx, tz) - 0.3, tz, s, rng() * 6.28, 0.7, rng(), 0);
+      this.bucketAdd(this.rockKind(), tx, this.hf.at(tx, tz) - 0.3, tz, s, rng() * 6.28, 0.7, rng(), 0);
       this.colliders.add(tx, tz, 0.6 * s);
     }
     this.flushProps();
   }
 
+  /**
+   * Turns the collected instances into batches. Each kind has its own near batch (where it has a
+   * detailed mesh); the far batches are shared by look-alikes (the three boulders, the two bare trees).
+   */
   flushProps() {
-    const worldMis = [], reflMis = [];
-    const heights = { pine: 4.6, round: 4.2, dead: 10, dead2: 10, rock: 1.0, thorn: 1.8 };
-    for (const b of this.propBuckets.values()) {
-      for (const kind of ['pine', 'round', 'dead', 'dead2', 'rock', 'thorn']) {
-        const arr = b[kind];
-        if (!arr.length) continue;
-        const count = arr.length / 8;
-        let minX = 1e9, minY = 1e9, minZ = 1e9, maxX = -1e9, maxY = -1e9, maxZ = -1e9;
-        for (let i = 0; i < arr.length; i += 8) {
-          const s = arr[i + 3], m = (kind === 'dead' || kind === 'dead2' ? 4.2 : 1.6) * s;
-          minX = Math.min(minX, arr[i] - m); maxX = Math.max(maxX, arr[i] + m);
-          minZ = Math.min(minZ, arr[i + 2] - m); maxZ = Math.max(maxZ, arr[i + 2] + m);
-          minY = Math.min(minY, arr[i + 1]); maxY = Math.max(maxY, arr[i + 1] + heights[kind] * s);
-        }
-        const aabb = new pc.BoundingBox();
-        aabb.setMinMax(new pc.Vec3(minX, minY, minZ), new pc.Vec3(maxX, maxY, maxZ));
-        const mat = kind === 'rock' ? this.mats.rocks : this.mats.props;
-        const mi = this.makeInstanced(this.propMeshes[kind], mat, new Float32Array(arr), count, aabb);
-        const cxw = (minX + maxX) / 2, czw = (minZ + maxZ) / 2;
-        const radius = Math.hypot(maxX - minX, maxZ - minZ) / 2;
-        this.clusters.push({ mi, x: cxw, z: czw, radius, base: count, kind });
-        const nearPond = Math.hypot(cxw - WORLD.pond.x, czw - WORLD.pond.z) < radius + WORLD.pond.r + 6;
-        (nearPond ? reflMis : worldMis).push(mi);
-      }
+    const live = [this.layers.world.id];
+    const { x: px, z: pz, r: pr } = WORLD.pond;
+    const FAR = { rock2: 'rock', rock3: 'rock', dead2: 'dead' };
+    const family = (kind) => FAR[kind] || kind;
+    const byShore = (arr, i) => Math.hypot(arr[i] - px, arr[i + 2] - pz) < pr + 14;
+    const counts = {}, shore = {};
+    for (const kind of PROP_KINDS) {
+      const arr = this.propInst[kind];
+      const f = family(kind);
+      counts[f] = (counts[f] || 0) + arr.length / 8;
+      for (let i = 0; i < arr.length; i += 8) if (byShore(arr, i)) shore[f] = (shore[f] || 0) + 1;
     }
-    this.addEntity('props', worldMis, false);
-    this.addEntity('props-reflected', reflMis, true);
-    this.propBuckets = null;
+    const far = {}, mirror = {};
+    this.farBatches = [];
+    for (const kind of PROP_KINDS) {
+      const arr = this.propInst[kind];
+      if (!arr.length) continue;
+      const f = family(kind);
+      const mat = f === 'rock' ? this.mats.rocks : this.mats.props;
+      if (!far[f]) {
+        far[f] = new Batch(this, `${f}-far`, this.propMeshes[f], mat, counts[f], live);
+        this.farBatches.push(far[f]);
+        // the lake's mirror: a fixed set of the light meshes standing round the shore
+        if (shore[f]) mirror[f] = new Batch(this, `${f}-mirror`, this.propMeshes[f], mat, shore[f], [this.layers.reflect.id]);
+      }
+      const data = new Float32Array(arr);
+      const hi = this.propMeshesHi[kind] || null;
+      const near = hi ? new Batch(this, `${kind}-near`, hi, mat, data.length / 8, live) : null;
+      this.propSets.push({ kind, data, far: far[f], near, reach: f === 'dead' ? 4.2 : 1.6 });
+      for (let i = 0; i < data.length; i += 8) if (byShore(data, i)) mirror[f].add(data, i);
+    }
+    for (const b of Object.values(mirror)) b.flush();
+    this.propInst = null;
   }
 
   // --------------------------------------------------------------- tall grass patches
@@ -543,7 +611,7 @@ export class World {
     const size = 16;
     const chunks = (WORLD.half * 2) / size;
     const mesh = grassTuftMesh(this.device);
-    const mis = [];
+    const grassChunks = [];
     const max = this.maxGrassPerM2;
     for (let cz = 0; cz < chunks; cz++) {
       for (let cx = 0; cx < chunks; cx++) {
@@ -571,16 +639,13 @@ export class World {
         }
         const data = new Float32Array(pts.length * 8);
         pts.forEach((p, i) => data.set(p, i * 8));
-        let minY = 1e9, maxY = -1e9;
-        for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1] + 1.4); }
-        const aabb = new pc.BoundingBox();
-        aabb.setMinMax(new pc.Vec3(x0 - 1, minY, z0 - 1), new pc.Vec3(x0 + size + 1, maxY, z0 + size + 1));
-        const mi = this.makeInstanced(mesh, this.mats.grass, data, pts.length, aabb);
-        mis.push(mi);
-        this.clusters.push({ mi, x: x0 + size / 2, z: z0 + size / 2, radius: size * 0.71, base: pts.length, kind: 'grass' });
+        grassChunks.push({ x: x0 + size / 2, z: z0 + size / 2, r: size * 0.71, data, n: pts.length });
       }
     }
-    if (mis.length) this.addEntity('grass', mis, false);
+    // one draw call for all the grass in view (the chunk lists are thinned and joined as the camera moves)
+    if (grassChunks.length) {
+      this.grassSet = { batch: new Batch(this, 'grass', mesh, this.mats.grass, Math.round(max * 3200) + 300, [this.layers.world.id], 10), chunks: grassChunks };
+    }
   }
 
   // --------------------------------------------------------------- shrine ruins
@@ -651,31 +716,81 @@ export class World {
     this.grassDensity = q.grass;
     this.fireflyCount = q.fireflies;
     this.drawDistance = q.drawDistance;
+    this.lodDistance = q.lod;
+    this.dirty = true;
   }
 
-  /** Distance culling + grass LOD. fx/fz = camera focus point. */
-  update(fx, fz, camX, camZ) {
-    const dd = this.drawDistance;
-    let vis = 0;
-    for (let i = 0; i < this.clusters.length; i++) {
-      const c = this.clusters[i];
-      const d = Math.min(Math.hypot(c.x - fx, c.z - fz), Math.hypot(c.x - camX, c.z - camZ)) - c.radius;
-      if (c.kind === 'grass') {
-        let lod = 0;
-        if (d < 10) lod = 1;
-        else if (d < 22) lod = 0.5;
-        else if (d < 34) lod = 0.2;
-        const n = Math.floor(c.base * lod * this.grassDensity);
-        c.mi.visible = n > 0;
-        if (n > 0) c.mi.instancingCount = n;
-      } else {
-        c.mi.visible = d < dd;
+  /** In the widened view cone, or right beside the wanderer (df = distance to the focus). */
+  inView(x, z, r, df) {
+    if (df - r < 3) return true;
+    const v = this.view;
+    const vx = x - v.cx, vz = z - v.cz;
+    const fwd = vx * v.dx + vz * v.dz;
+    return Math.abs(vx * v.dz - vz * v.dx) < fwd * v.tan + r * 2 + 2;
+  }
+
+  /** Refills every dynamic batch for the current view. all = everything (shader warm-up). */
+  rebuild(all) {
+    const v = this.view;
+    const lod = this.lodDistance;
+    // past this the camera's far plane (set just beyond the fog) would clip it anyway
+    const reach = Math.min(this.drawDistance + 14, this.fogEnd + 4);
+    this.builtFog = this.fogEnd;
+    for (const b of this.farBatches) b.reset();
+    for (const s of this.propSets) {
+      if (s.near) s.near.reset();
+      const d = s.data;
+      for (let i = 0; i < d.length; i += 8) {
+        const x = d[i], z = d[i + 2], r = s.reach * d[i + 3];
+        const df = Math.hypot(x - v.x, z - v.z);
+        if (!all) {
+          if (Math.hypot(x - v.cx, z - v.cz) - r > reach) continue; // swallowed by the fog: not drawn
+          if (!this.inView(x, z, r, df)) continue; // off screen: not drawn
+        }
+        if (s.near && (all || df < lod)) s.near.add(d, i);
+        if (!s.near || all || df >= lod) s.far.add(d, i);
       }
-      if (c.mi.visible) vis++;
+      if (s.near) s.near.flush();
+    }
+    for (const b of this.farBatches) b.flush();
+    const g = this.grassSet;
+    if (g) {
+      g.batch.reset();
+      for (const c of g.chunks) {
+        const df = Math.hypot(c.x - v.x, c.z - v.z);
+        const dc = Math.hypot(c.x - v.cx, c.z - v.cz) - c.r;
+        const d = Math.min(df - c.r, dc);
+        const k = all ? 1 : dc > reach ? 0 : d < 10 ? 1 : d < 22 ? 0.5 : d < 34 ? 0.2 : 0; // thinner with distance
+        if (!k || (!all && !this.inView(c.x, c.z, c.r, df))) continue;
+        g.batch.addRun(c.data, Math.floor(c.n * k * (all ? 1 : this.grassDensity)));
+      }
+      g.batch.flush();
+    }
+    let vis = 0;
+    for (const b of this.batches) if (b.mi.visible) vis++;
+    this.visibleClusters = vis;
+  }
+
+  /**
+   * Called every frame. (fx, fz) = the camera focus, (camX, camZ) = the camera, yaw = its heading.
+   * The batches are only refilled when the view has changed enough to matter: the cone they
+   * were built for is 15 degrees wider than the screen, so small turns and steps cost nothing.
+   */
+  update(fx, fz, camX, camZ, yaw = 0) {
+    const v = this.view;
+    let turn = yaw - v.yaw;
+    turn = Math.abs(Math.atan2(Math.sin(turn), Math.cos(turn)));
+    if (this.dirty || turn > 0.1 || Math.abs(this.fogEnd - this.builtFog) > 1.5 || Math.hypot(fx - v.x, fz - v.z) > 1.5 || Math.hypot(camX - v.cx, camZ - v.cz) > 1.5) {
+      this.dirty = false;
+      v.x = fx; v.z = fz; v.cx = camX; v.cz = camZ; v.yaw = yaw;
+      v.dx = -Math.sin(yaw); v.dz = -Math.cos(yaw);
+      const cam = this.camera;
+      const half = cam ? Math.atan(Math.tan((cam.fov * Math.PI) / 360) * cam.aspectRatio) : 0.55;
+      v.tan = Math.tan(Math.min(1.45, half + 0.26)); // the screen's half-width plus 15 degrees
+      this.rebuild(false);
     }
     const ff = this.fireflies;
     ff.mi.visible = this.fireflyCount > 0;
     if (ff.mi.visible) ff.mi.instancingCount = Math.min(ff.max, this.fireflyCount);
-    this.visibleClusters = vis;
   }
 }

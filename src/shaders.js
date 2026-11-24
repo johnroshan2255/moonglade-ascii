@@ -114,6 +114,9 @@ void main(void) {
   float sw = (code - cls * 32.0) / 31.0;
   float seed = 0.0;
   float glow = 1.0;
+  // glow-class vertices flagged with a full sway weight are self-lit (ember eyes, cracks), so
+  // they can live in the same mesh, and the same draw call, as the body they belong to
+  if (cls > 6.5 && sw > 0.98) { glow = 4.0; sw = 0.0; }
 ${inst ? `
   float cr = cos(inst1.x);
   float sr = sin(inst1.x);
@@ -176,9 +179,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   var col = input.vertex_color.rgb;
   let code = floor(input.vertex_color.a * 255.0 + 0.5);
   let cls = floor(code / 32.0);
-  let sw = (code - cls * 32.0) / 31.0;
+  var sw = (code - cls * 32.0) / 31.0;
   var seed = 0.0;
   var glow = 1.0;
+  if (cls > 6.5 && sw > 0.98) { glow = 4.0; sw = 0.0; }
 ${inst ? `
   let cr = cos(input.inst1.x);
   let sr = sin(input.inst1.x);
@@ -224,7 +228,7 @@ float fogAmount(vec3 w, vec3 eye) {
   float d = length(w - eye);
   float t = max(d - uFog.x, 0.0) / max(uFog.y - uFog.x, 0.001) * 1.8;
   float fd = 1.0 - exp(-t * t);
-  float mist = uFog.z * exp(-max(w.y, 0.0) * uFog.w) * smoothstep(2.0, 16.0, d);
+  float mist = uFog.z * exp(-max(w.y, 0.0) * uFog.w) * smoothstep(9.0, 26.0, d);
   return clamp(fd + mist * (1.0 - fd), 0.0, 1.0);
 }`;
 const FOG_WGSL = `
@@ -232,7 +236,7 @@ fn fogAmount(w: vec3f, eye: vec3f) -> f32 {
   let d = length(w - eye);
   let t = max(d - uniform.uFog.x, 0.0) / max(uniform.uFog.y - uniform.uFog.x, 0.001) * 1.8;
   let fd = 1.0 - exp(-t * t);
-  let mist = uniform.uFog.z * exp(-max(w.y, 0.0) * uniform.uFog.w) * smoothstep(2.0, 16.0, d);
+  let mist = uniform.uFog.z * exp(-max(w.y, 0.0) * uniform.uFog.w) * smoothstep(9.0, 26.0, d);
   return clamp(fd + mist * (1.0 - fd), 0.0, 1.0);
 }`;
 
@@ -266,7 +270,7 @@ ${GRASS_GLSL}
 ${FOG_GLSL}
 void main(void) {
   float camD = length(vWorld - view_position);
-  if (camD < uNearFade && hash12(floor(gl_FragCoord.xy)) > (camD - 1.0) / (uNearFade - 1.0)) discard;
+  if (camD < uNearFade && fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715)))) > (camD - 1.0) / (uNearFade - 1.0)) discard;
   vec3 n = normalize(vNormal);
   vec3 V = normalize(view_position - vWorld);
   if (dot(n, V) < 0.0) n = -n; // two-sided surfaces (wings, cloth) light from the side we see
@@ -280,7 +284,7 @@ void main(void) {
     float sd = length(vWorld.xz - uPlayer.xz);
     light *= mix(0.25, 1.0, smoothstep(0.15, 0.7, sd));
   }
-  vec3 c = vColor * light + vColor * (uEmissive * vGlow);
+  vec3 c = vColor * light + vColor * (vGlow > 2.0 ? 2.4 : uEmissive * vGlow);
   // sound rings (staff strikes, chimes, the warden's footfalls)
   float rg = 0.0;
   rg += (1.0 - smoothstep(0.0, 0.45, abs(length(vWorld.xz - uRing0.xy) - uRing0.z))) * uRing0.w;
@@ -289,10 +293,10 @@ void main(void) {
   c += vec3(0.6, 0.52, 0.4) * rg * uRingGain;
   // fog-lit rim: silhouettes pick up the haze on their edges (the soft halo of the genre)
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
-  c += uHaze * rim * 0.22;
+  c += uHaze * rim * 0.08;
   float fog = fogAmount(vWorld, view_position);
   // emissive things punch through the haze a little
-  fog *= 1.0 - clamp(uEmissive * 0.25, 0.0, 0.6);
+  fog *= 1.0 - clamp((vGlow > 2.0 ? 2.4 : uEmissive) * 0.25, 0.0, 0.6);
   c = mix(c, uHaze, fog);
   float cls = floor(vCls + 0.5);
   float sub = floor(fog * 31.0 + 0.5);
@@ -332,7 +336,7 @@ ${FOG_WGSL}
 fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   var output: FragmentOutput;
   let camD = length(input.vWorld - uniform.view_position);
-  if (camD < uniform.uNearFade && hash12(floor(input.position.xy)) > (camD - 1.0) / (uniform.uNearFade - 1.0)) { discard; }
+  if (camD < uniform.uNearFade && fract(52.9829189 * fract(dot(floor(input.position.xy), vec2f(0.06711056, 0.00583715)))) > (camD - 1.0) / (uniform.uNearFade - 1.0)) { discard; }
   var n = normalize(input.vNormal);
   let V = normalize(uniform.view_position - input.vWorld);
   if (dot(n, V) < 0.0) { n = -n; }
@@ -346,16 +350,16 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     let sd = length(input.vWorld.xz - uniform.uPlayer.xz);
     light = light * mix(0.25, 1.0, smoothstep(0.15, 0.7, sd));
   }
-  var c = input.vColor * light + input.vColor * (uniform.uEmissive * input.vGlow);
+  var c = input.vColor * light + input.vColor * select(uniform.uEmissive * input.vGlow, 2.4, input.vGlow > 2.0);
   var rg = 0.0;
   rg = rg + (1.0 - smoothstep(0.0, 0.45, abs(length(input.vWorld.xz - uniform.uRing0.xy) - uniform.uRing0.z))) * uniform.uRing0.w;
   rg = rg + (1.0 - smoothstep(0.0, 0.45, abs(length(input.vWorld.xz - uniform.uRing1.xy) - uniform.uRing1.z))) * uniform.uRing1.w;
   rg = rg + (1.0 - smoothstep(0.0, 0.45, abs(length(input.vWorld.xz - uniform.uRing2.xy) - uniform.uRing2.z))) * uniform.uRing2.w;
   c = c + vec3f(0.6, 0.52, 0.4) * rg * uniform.uRingGain;
   let rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
-  c = c + uniform.uHaze * rim * 0.22;
+  c = c + uniform.uHaze * rim * 0.08;
   var fog = fogAmount(input.vWorld, uniform.view_position);
-  fog = fog * (1.0 - clamp(uniform.uEmissive * 0.25, 0.0, 0.6));
+  fog = fog * (1.0 - clamp(select(uniform.uEmissive, 2.4, input.vGlow > 2.0) * 0.25, 0.0, 0.6));
   c = mix(c, uniform.uHaze, fog);
   var cls = floor(input.vCls + 0.5);
   var sub = floor(fog * 31.0 + 0.5);
@@ -780,37 +784,44 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 }`;
 
 // ---------------------------------------------------------------- normal (non-ASCII) display
-// Old-film look: tone curve, near-monochrome grade, S-curve contrast, tilt-shift blur at the top
-// and bottom (miniature / dollhouse feel), heavy vignette, animated grain and light flicker.
+// Crisp, high-contrast film look: the scene (rendered at up to native resolution) is sharpened
+// back after upscaling, toned with deep blacks and a strong S-curve so dark shapes read as hard
+// silhouettes against the luminous mist, then given a heavy vignette, a fine grain that lives in
+// the shadows, and a faint projector flicker. No blur anywhere.
 const BLIT_FS_GLSL = `
 uniform sampler2D uScene;
 uniform vec2 uScreen;
+uniform vec2 uTexel;
+uniform float uSharp;
 uniform float uTime;
-uniform float uBlur;
 uniform vec4 uGlow;
 ${HASH_GLSL}
 ${GRADE_GLSL}
 void main(void) {
   vec2 uv = gl_FragCoord.xy / uScreen;
   vec3 c = texture2D(uScene, uv).rgb;
-  float band = smoothstep(0.18, 0.5, abs(uv.y - 0.42));
-  if (uBlur > 0.0 && band > 0.01) {
-    vec2 o = vec2(uBlur * band) * vec2(uScreen.y / uScreen.x, 1.0); // uBlur = fraction of screen height
-    c = (c * 2.0 + texture2D(uScene, uv + vec2(o.x, o.y)).rgb + texture2D(uScene, uv + vec2(-o.x, o.y)).rgb
-       + texture2D(uScene, uv + vec2(o.x, -o.y)).rgb + texture2D(uScene, uv + vec2(-o.x, -o.y)).rgb) / 6.0;
+  if (uSharp > 0.0) {
+    // unsharp mask: undo the softening of the upscale, sharpen every edge
+    vec3 nb = texture2D(uScene, uv + vec2(uTexel.x, 0.0)).rgb + texture2D(uScene, uv - vec2(uTexel.x, 0.0)).rgb
+            + texture2D(uScene, uv + vec2(0.0, uTexel.y)).rgb + texture2D(uScene, uv - vec2(0.0, uTexel.y)).rgb;
+    c = max(c + (c - nb * 0.25) * uSharp * 4.0, vec3(0.0));
   }
   float l0 = dot(c, vec3(0.3, 0.59, 0.11));
   c *= (1.0 - exp(-l0 * 2.4)) / max(l0, 0.0001);
-  c = min(grade(c), vec3(1.0));
+  c = grade(c);
+  c /= max(1.0, max(c.r, max(c.g, c.b))); // over-bright light keeps its hue (ember stays ember)
+  // crush the blacks, then a strong S-curve: shadows go to ink, the mist stays luminous
+  c = max(c - 0.035, vec3(0.0)) / 0.965;
   vec3 sc = c * c * (3.0 - 2.0 * c);
-  c = mix(c, sc, 0.65);
+  c = mix(c, sc, 0.85);
   vec2 gq = (uv - uGlow.xy) * vec2(uScreen.x / uScreen.y, 1.0);
   c += vec3(1.0, 0.52, 0.18) * exp(-dot(gq, gq) / max(uGlow.z * uGlow.z, 0.00001)) * uGlow.w;
   vec2 q = (uv - 0.5) * vec2(uScreen.x / uScreen.y, 1.0);
-  float vig = 1.0 - smoothstep(0.25, 1.05, length(q) * (uScreen.x > uScreen.y ? 1.0 : 1.35));
-  c *= mix(0.12, 1.0, vig);
-  float flick = 1.0 + (hash12(vec2(floor(uTime * 14.0), 3.7)) - 0.5) * 0.035;
-  float grain = (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 811.0) - 0.5) * 0.07;
+  float vig = 1.0 - smoothstep(0.2, 0.95, length(q) * (uScreen.x > uScreen.y ? 1.0 : 1.35));
+  c *= mix(0.06, 1.0, vig * vig);
+  float l = dot(c, vec3(0.3, 0.59, 0.11));
+  float flick = 1.0 + (hash12(vec2(floor(uTime * 12.0), 3.7)) - 0.5) * 0.025;
+  float grain = (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 811.0) - 0.5) * 0.045 * (1.0 - l * 0.7);
   c = c * flick + grain;
   gl_FragColor = vec4(max(c, vec3(0.0)), 1.0);
 }`;
@@ -818,8 +829,9 @@ const BLIT_FS_WGSL = `
 var uScene: texture_2d<f32>;
 var uScene_sampler: sampler;
 uniform uScreen: vec2f;
+uniform uTexel: vec2f;
+uniform uSharp: f32;
 uniform uTime: f32;
-uniform uBlur: f32;
 uniform uGlow: vec4f;
 ${HASH_WGSL}
 ${GRADE_WGSL}
@@ -830,26 +842,27 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   let fc = vec2f(input.position.x, uniform.uScreen.y - input.position.y);
   let uv = fc / uniform.uScreen;
   var c = textureSampleLevel(uScene, uScene_sampler, uv, 0.0).rgb;
-  let band = smoothstep(0.18, 0.5, abs(uv.y - 0.42));
-  if (uniform.uBlur > 0.0 && band > 0.01) {
-    let o = vec2f(uniform.uBlur * band) * vec2f(uniform.uScreen.y / uniform.uScreen.x, 1.0);
-    c = (c * 2.0 + textureSampleLevel(uScene, uScene_sampler, uv + vec2f(o.x, o.y), 0.0).rgb
-       + textureSampleLevel(uScene, uScene_sampler, uv + vec2f(-o.x, o.y), 0.0).rgb
-       + textureSampleLevel(uScene, uScene_sampler, uv + vec2f(o.x, -o.y), 0.0).rgb
-       + textureSampleLevel(uScene, uScene_sampler, uv + vec2f(-o.x, -o.y), 0.0).rgb) / 6.0;
+  if (uniform.uSharp > 0.0) {
+    let tx = uniform.uTexel;
+    let nb = textureSampleLevel(uScene, uScene_sampler, uv + vec2f(tx.x, 0.0), 0.0).rgb + textureSampleLevel(uScene, uScene_sampler, uv - vec2f(tx.x, 0.0), 0.0).rgb
+           + textureSampleLevel(uScene, uScene_sampler, uv + vec2f(0.0, tx.y), 0.0).rgb + textureSampleLevel(uScene, uScene_sampler, uv - vec2f(0.0, tx.y), 0.0).rgb;
+    c = max(c + (c - nb * 0.25) * uniform.uSharp * 4.0, vec3f(0.0));
   }
   let l0 = dot(c, vec3f(0.3, 0.59, 0.11));
   c = c * ((1.0 - exp(-l0 * 2.4)) / max(l0, 0.0001));
-  c = min(grade(c), vec3f(1.0));
+  c = grade(c);
+  c = c / max(1.0, max(c.r, max(c.g, c.b)));
+  c = max(c - vec3f(0.035), vec3f(0.0)) / 0.965;
   let sc = c * c * (vec3f(3.0) - 2.0 * c);
-  c = mix(c, sc, 0.65);
+  c = mix(c, sc, 0.85);
   let gq = (uv - uniform.uGlow.xy) * vec2f(uniform.uScreen.x / uniform.uScreen.y, 1.0);
   c = c + vec3f(1.0, 0.52, 0.18) * exp(-dot(gq, gq) / max(uniform.uGlow.z * uniform.uGlow.z, 0.00001)) * uniform.uGlow.w;
   let q = (uv - vec2f(0.5)) * vec2f(uniform.uScreen.x / uniform.uScreen.y, 1.0);
-  let vig = 1.0 - smoothstep(0.25, 1.05, length(q) * select(1.35, 1.0, uniform.uScreen.x > uniform.uScreen.y));
-  c = c * mix(0.12, 1.0, vig);
-  let flick = 1.0 + (hash12(vec2f(floor(uniform.uTime * 14.0), 3.7)) - 0.5) * 0.035;
-  let grain = (hash12(fc + vec2f(fract(uniform.uTime * 7.31) * 811.0)) - 0.5) * 0.07;
+  let vig = 1.0 - smoothstep(0.2, 0.95, length(q) * select(1.35, 1.0, uniform.uScreen.x > uniform.uScreen.y));
+  c = c * mix(0.06, 1.0, vig * vig);
+  let l = dot(c, vec3f(0.3, 0.59, 0.11));
+  let flick = 1.0 + (hash12(vec2f(floor(uniform.uTime * 12.0), 3.7)) - 0.5) * 0.025;
+  let grain = (hash12(fc + vec2f(fract(uniform.uTime * 7.31) * 811.0)) - 0.5) * 0.045 * (1.0 - l * 0.7);
   c = c * flick + vec3f(grain);
   output.color = vec4f(max(c, vec3f(0.0)), 1.0);
   return output;

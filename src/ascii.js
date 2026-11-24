@@ -48,6 +48,9 @@ export class AsciiRenderer {
     const layers = app.scene.layers;
 
     this.layerWorld = layers.getLayerByName('World');
+    // drawn in a fixed order (MeshInstance.drawOrder): props and grass, then water, then the terrain
+    // last, so the depth test rejects ground that something already covers
+    this.layerWorld.opaqueSortMode = pc.SORTMODE_MANUAL;
     this.layerReflect = new pc.Layer({ name: 'Reflect' });
     this.layerCell = new pc.Layer({ name: 'AsciiCell', opaqueSortMode: pc.SORTMODE_NONE });
     this.layerComposite = new pc.Layer({ name: 'AsciiComposite', opaqueSortMode: pc.SORTMODE_NONE });
@@ -117,6 +120,7 @@ export class AsciiRenderer {
     this.asciiCam = quadCam('asciiCam', this.layerComposite, 3);
 
     // remove the default World layer camera ordering issues: none of our quad layers use depth
+    this.reflectAt = -1; // when the mirror was last drawn (s)
     this.glyphSize = 'm';
     this.ascii = true; // false = normal 3D view, same world, no glyph filter
     this.normalScale = 1; // normal mode: 3D resolution in CSS px multiplier (quality-driven)
@@ -128,7 +132,8 @@ export class AsciiRenderer {
 
     this.compMat.setParameter('uBgMix', 0.16);
     this.compMat.setParameter('uBg', new Float32Array([0.008, 0.008, 0.01]));
-    this.blitMat.setParameter('uBlur', 0);
+    this.blitMat.setParameter('uSharp', 0.3);
+    this.blitMat.setParameter('uTexel', new Float32Array([0.001, 0.001]));
     this.blitMat.setParameter('uGlow', new Float32Array([0.5, 0.5, 0.1, 0]));
     this.cellMat.setParameter('uExposure', 3.2);
     this.cellMat.setParameter('uEdge', 0.3);
@@ -271,6 +276,7 @@ export class AsciiRenderer {
     this.compMI.material = this.blitMat;
     this.blitMat.setParameter('uScene', this.sceneRT.colorBuffer);
     this.blitMat.setParameter('uScreen', new Float32Array([W, H]));
+    this.blitMat.setParameter('uTexel', new Float32Array([1 / sw, 1 / sh]));
     this.sceneSize = [sw, sh];
     return true;
   }
@@ -289,10 +295,14 @@ export class AsciiRenderer {
    * rigid transform (up = -Y). That image equals the true mirror image flipped horizontally,
    * which the water shader undoes by sampling at (1 - u, v).
    */
-  updateReflection(camPos, target, waterY, active) {
-    const on = active && !!this.reflectRT;
+  updateReflection(camPos, target, waterY, active, now = 0, force = false) {
+    let on = active && !!this.reflectRT;
+    // at very high frame rates the mirror does not need redrawing for every frame (75 times a
+    // second at most: still every frame on a 60 Hz screen)
+    if (on && !force && this.reflectAt >= 0 && now >= this.reflectAt && now - this.reflectAt < 1 / 75) on = false;
     this.reflectCam.enabled = on;
     if (!on) return;
+    this.reflectAt = now;
     this.reflectCam.setPosition(camPos.x, 2 * waterY - camPos.y, camPos.z);
     this.reflectCam.lookAt(target.x, 2 * waterY - target.y, target.z, 0, -1, 0);
   }

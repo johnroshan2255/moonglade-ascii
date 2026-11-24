@@ -4,7 +4,7 @@
 //   this frame: {x,z,r,kind}), g.time, g.lantern {x,y,z}; and calls g.hurt(), g.kill(), g.ring().
 import * as pc from 'playcanvas';
 import { CLS, worldMaterial } from './shaders.js';
-import { MeshBuilder, rgba, addTube, addLathe, addFan, addSphere } from './meshes.js';
+import { MeshBuilder, rgba, addTube, addLathe, addFan, addSphere, addBox, faceted } from './meshes.js';
 import { LAYOUT, regionOf } from './story.js';
 import { SHRINE_Y } from './world.js';
 import * as sfx from './audio.js';
@@ -30,7 +30,7 @@ class Monster {
   }
   part(mb, parent = this.root, mat = Monster.mat) {
     const e = new pc.Entity('part');
-    e.addComponent('render', { meshInstances: [new pc.MeshInstance(mb.build(this.app.graphicsDevice), mat)], layers: this.layers, castShadows: false, receiveShadows: false });
+    e.addComponent('render', { meshInstances: [new pc.MeshInstance(faceted(mb, 0.2, Monster.rng).build(this.app.graphicsDevice), mat)], layers: this.layers, castShadows: false, receiveShadows: false });
     parent.addChild(e);
     return e;
   }
@@ -58,46 +58,81 @@ export class VeilMother extends Monster {
     this.region = home.region;
     this.mercy = !!home.mercy;
     const rng = mulberry(17 + Math.round(home.x));
-    // hunched, hooded body: a lathe bent forward over the top third
-    const hunch = (x, y, z) => { const k = Math.max(0, (y - 1.5) / 1.7); return [x, y - k * k * 0.25, z + k * k * 0.75]; };
+    // a tall hooded wraith, stooping a little at the top
+    const hunch = (x, y, z) => { const k = Math.max(0, (y - 1.8) / 1.6); return [x, y - k * k * 0.15, z + k * k * 0.42]; };
+    const robe = (v = 0, sw = 0) => shade(0.03 + v, CLS.CHAR, sw);
     const body = new MeshBuilder();
-    addLathe(body, [[0.72, 0], [0.84, 0.2], [0.78, 0.7], [0.64, 1.4], [0.55, 2.0], [0.52, 2.5], [0.44, 2.85], [0.26, 3.1], [0.0, 3.2]], {
-      seg: 14, sz: 0.8, jitter: 0.12, rng, warp: hunch, colFn: (t) => shade(0.015 + t * 0.02, CLS.CHAR, t * 0.15),
+    // the long robe: narrow shoulders flaring to a wide skirt
+    addLathe(body, [[0.64, 0.12], [0.56, 0.6], [0.45, 1.3], [0.39, 1.9], [0.42, 2.42], [0.36, 2.7], [0.18, 2.84], [0.0, 2.88]], {
+      seg: 9, sz: 0.74, jitter: 0.16, rng, warp: hunch, colFn: (t) => robe(t * 0.03),
     });
-    // the drooping sack-like hood where a head should be
-    addTube(body, [[0, 2.95, 0.55, 0.3], [0, 2.85, 0.85, 0.3], [0, 2.6, 1.05, 0.24], [0, 2.25, 1.1, 0.12], [0, 2.05, 1.05, 0.02]], { seg: 9, colFn: () => shade(0.025) });
-    // curtains of wet moss and cobweb: dozens of hanging strands
-    for (let i = 0; i < 30; i++) {
-      const a = (i / 30) * Math.PI * 2 + rng() * 0.2;
-      const y0 = 2.3 + rng() * 0.6;
-      let [x, y, z] = hunch(Math.cos(a) * 0.55, y0, Math.sin(a) * 0.45);
-      const pts = [[x, y, z, 0.06 + rng() * 0.03]];
-      const drop = y0 - (0.1 + rng() * 0.6);
-      for (let k = 1; k <= 5; k++) {
-        x += Math.cos(a) * 0.05 + (rng() - 0.5) * 0.12;
-        z += Math.sin(a) * 0.05 + (rng() - 0.5) * 0.12;
-        y -= drop / 5;
-        pts.push([x, y, z, (0.055 + rng() * 0.02) * (1 - k / 6)]);
-      }
-      addTube(body, pts, { seg: 4, subdiv: 2, colFn: (t) => shade(0.02 + t * 0.03, CLS.FOLIAGE, 0.2 + t * 0.8) });
+    // ragged hem: pointed tatters, the back ones trailing along the ground
+    for (let i = 0; i < 15; i++) {
+      const a = (i / 15) * Math.PI * 2 + rng() * 0.2;
+      const x = Math.cos(a) * 0.6, z = Math.sin(a) * 0.45;
+      const tail = z < -0.15 ? -(0.4 + rng() * 0.7) : 0;
+      addTube(body, [[x, 0.6, z, 0.13], [x * 1.12, 0.25, z * 1.12 + tail * 0.3, 0.09], [x * 1.22 + (rng() - 0.5) * 0.15, 0.02, z * 1.2 + tail, 0.0]], {
+        seg: 4, subdiv: 2, colFn: (t) => robe(-0.005, t),
+      });
     }
+    // the deep peaked cowl and the black hollow where a face should be
+    addTube(body, [[0, 2.58, 0.05, 0.3], [0, 2.84, 0.1, 0.36], [0, 3.1, 0.02, 0.32], [0, 3.32, -0.12, 0.2], [0, 3.46, -0.3, 0.02]].map(([x, y, z, r]) => [...hunch(x, y, z), r]), { seg: 7, colFn: () => robe(0.015) });
+    const fc = hunch(0, 2.9, 0.34);
+    addSphere(body, { x: fc[0], y: fc[1], z: fc[2], r: 0.22, sy: 1.2, segW: 7, segH: 5, colFn: () => rgba(0.012, 0.012, 0.016, CLS.CHAR) });
+    // a heavy mantle over the shoulders, its edge hanging in torn points
+    addLathe(body, [[0.74, 2.02], [0.7, 2.25], [0.56, 2.5], [0.4, 2.68], [0.3, 2.78]], { seg: 9, sz: 0.8, jitter: 0.14, rng, warp: hunch, colFn: (t) => robe(0.012 + t * 0.02) });
+    for (let i = 0; i < 11; i++) {
+      const a = (i / 11) * Math.PI * 2 + rng() * 0.3;
+      const x = Math.cos(a) * 0.72, z = Math.sin(a) * 0.58;
+      const drop = 0.28 + rng() * 0.4;
+      addTube(body, [[x, 2.1, z, 0.12], [x * 1.05, 2.1 - drop * 0.55, z * 1.05, 0.07], [x * 1.02, 2.1 - drop, z * 1.02, 0.0]].map(([px, py, pz, r]) => [...hunch(px, py, pz), r]), { seg: 4, subdiv: 2, colFn: (t) => robe(0.0, t * 0.8) });
+    }
+    // the gape under the eyes: a ring of long pale fangs
+    for (let i = 0; i < 6; i++) {
+      const fx = (i - 2.5) * 0.045;
+      const up = i % 2 === 0;
+      addTube(body, [[fc[0] + fx, fc[1] - (up ? 0.1 : 0.3), fc[2] + 0.17, 0.014], [fc[0] + fx, fc[1] - (up ? 0.22 : 0.19), fc[2] + 0.19, 0.0]], { seg: 3, subdiv: 1, colFn: () => rgba(0.5, 0.48, 0.42, CLS.CHAR) });
+    }
+    // a ribcage glimpsed through the open robe
+    for (let i = 0; i < 4; i++) {
+      const y = 2.3 - i * 0.15;
+      for (const sg of [-1, 1]) {
+        addTube(body, [[0, y, 0.37], [0.13 * sg, y - 0.03, 0.36], [0.23 * sg, y - 0.09, 0.27]].map(([x, yy, z]) => [...hunch(x, yy, z), 0.024]), { seg: 4, subdiv: 2, colFn: () => shade(0.16) });
+      }
+    }
+    addTube(body, [[0, 2.38, 0.38], [0, 1.85, 0.36]].map(([x, y, z]) => [...hunch(x, y, z), 0.025]), { seg: 4, colFn: () => shade(0.14) });
+    // four ember eyes in the dark of the hood
+    const em = new MeshBuilder();
+    for (const [ex, ey, er] of [[-0.075, 0.1, 0.024], [0.075, 0.1, 0.024], [-0.04, 0.025, 0.02], [0.04, 0.025, 0.02], [0, 0.155, 0.015]]) {
+      addSphere(em, { x: fc[0] + ex, y: fc[1] + ey, z: fc[2] + 0.2, r: er, segW: 5, segH: 3, colFn: () => rgba(1.0, 0.66, 0.2, CLS.GLOW) });
+    }
+    // (eyes ride in the body mesh as self-lit vertices: one draw call for the whole figure)
+    body.append(em.selfLit());
     this.part(body, this.root, Monster.matSway);
-    // long jointed arms ending in cupped snuffer palms and long fingers
-    this.arms = [-1, 1].map((s) => {
+    // long thin arms ending in long, hooked claws, with shards of something crumbling around the hands
+    this.arms = [-1, 1].map((sg) => {
       const pivot = new pc.Entity('arm');
-      const [sx, sy, sz] = hunch(0.5 * s, 2.75, 0.2);
+      const [sx, sy, sz] = hunch(0.42 * sg, 2.58, 0.18);
       pivot.setLocalPosition(sx, sy, sz);
       this.root.addChild(pivot);
       const mb = new MeshBuilder();
-      addTube(mb, [[0, 0, 0, 0.075], [0.12 * s, -0.45, 0.22, 0.06], [0.16 * s, -0.95, 0.32, 0.048], [0.12 * s, -1.45, 0.38, 0.04], [0.08 * s, -1.85, 0.42, 0.035]], { seg: 6, colFn: () => shade(0.02) });
-      // the snuffer: a wide cupped palm opening downward
-      addLathe(mb, [[0.04, 0.02], [0.16, -0.04], [0.3, -0.16], [0.36, -0.28], [0.35, -0.31]], { seg: 10, x: 0.08 * s, y: -1.88, z: 0.44, colFn: () => shade(0.03) });
-      for (let f = 0; f < 4; f++) {
-        const fa = (f / 4) * Math.PI * 2 + 0.4;
-        const fx = 0.08 * s + Math.cos(fa) * 0.32, fz = 0.44 + Math.sin(fa) * 0.32;
-        addTube(mb, [[fx, -2.16, fz, 0.022], [fx + Math.cos(fa) * 0.06, -2.4, fz + Math.sin(fa) * 0.06, 0.016], [fx + Math.cos(fa) * 0.02, -2.62, fz + Math.sin(fa) * 0.02, 0.004]], { seg: 4, subdiv: 2, colFn: () => shade(0.02) });
+      // skeletal: the elbow juts out and back, the forearm reaches forward
+      addTube(mb, [[0, 0, 0, 0.085], [0.2 * sg, -0.42, -0.08, 0.06], [0.3 * sg, -0.82, 0.02, 0.05], [0.24 * sg, -1.12, 0.3, 0.042], [0.16 * sg, -1.36, 0.5, 0.038]], { seg: 5, colFn: () => robe(0.01) });
+      addSphere(mb, { x: 0.3 * sg, y: -0.82, z: 0.0, r: 0.075, segW: 5, segH: 3, colFn: () => robe(0.02) });
+      for (let f = 0; f < 5; f++) {
+        const fa = -0.9 + (f / 4) * 1.8;
+        const hx = 0.16 * sg, hy = -1.36, hz = 0.5;
+        addTube(mb, [[hx, hy, hz, 0.025], [hx + Math.sin(fa) * 0.14 * sg, hy - 0.22, hz + 0.08 + Math.cos(fa) * 0.06, 0.018], [hx + Math.sin(fa) * 0.2 * sg, hy - 0.5, hz + 0.16 + Math.cos(fa) * 0.05, 0.008], [hx + Math.sin(fa) * 0.18 * sg, hy - 0.66, hz + 0.26, 0.0]], {
+          seg: 4, subdiv: 2, colFn: () => shade(0.0),
+        });
       }
-      this.part(mb, pivot, Monster.matDouble);
+      const shards = new MeshBuilder();
+      for (let k = 0; k < 10; k++) {
+        const r = 0.035 + rng() * 0.06;
+        addBox(shards, { x: 0.16 * sg + (rng() - 0.5) * 0.7, y: -1.4 + (rng() - 0.5) * 0.9, z: 0.5 + (rng() - 0.5) * 0.5, sx: r, sy: r * 1.6, sz: r * 0.6, rot: rng() * 6, tilt: rng() * 3, col: shade(0.0, CLS.CHAR, 1) });
+      }
+      mb.append(shards);
+      this.part(mb, pivot, Monster.matSway);
       return pivot;
     });
     this.reset();
@@ -208,34 +243,55 @@ export class AshHound extends Monster {
     this.meadow = LAYOUT.southMeadow;
     this.body = new pc.Entity('houndBody');
     this.root.addChild(this.body);
-    const bone = (v = 0) => shade(0.03 + v);
+    const rng = mulberry(400 + Math.round(home.x * 7));
+    const fur = (v = 0, sw = 0) => shade(0.01 + v, CLS.CHAR, sw);
     const mb = new MeshBuilder();
-    // arched, starved spine: tail root -> withers -> neck -> skull
-    addTube(mb, [[0, 0.76, -0.6, 0.05], [0, 0.86, -0.2, 0.06], [0, 0.9, 0.25, 0.07], [0, 1.0, 0.55, 0.06], [0, 1.1, 0.74, 0.05]], { seg: 6, colFn: () => bone() });
-    // long narrow skull, jaw, ears
-    addTube(mb, [[0, 1.1, 0.7, 0.1], [0, 1.07, 0.88, 0.095], [0, 1.0, 1.1, 0.06], [0, 0.95, 1.26, 0.028]], { seg: 7, colFn: () => bone(0.01) });
-    addTube(mb, [[0, 1.02, 0.78, 0.05], [0, 0.95, 1.0, 0.04], [0, 0.91, 1.18, 0.018]], { seg: 5, colFn: () => bone() });
-    for (const s of [-1, 1]) addTube(mb, [[0.05 * s, 1.15, 0.76, 0.035], [0.09 * s, 1.26, 0.68, 0.025], [0.07 * s, 1.32, 0.58, 0.003]], { seg: 4, colFn: () => bone() });
-    // hollow ribcage: curved rib hoops, deep at the chest, shallow at the waist
-    for (let i = 0; i < 7; i++) {
-      const z = 0.36 - i * 0.09;
-      const depth = 0.45 - i * 0.035;
-      const half = 0.17 - i * 0.012;
-      for (const s of [-1, 1]) {
-        addTube(mb, [[0, 0.88, z, 0.018], [half * s, 0.78, z + 0.02, 0.016], [(half - 0.02) * s, 0.88 - depth * 0.7, z + 0.04, 0.014], [0, 0.88 - depth, z + 0.06, 0.012]], { seg: 4, subdiv: 3, capEnd: false, colFn: () => bone(0.02) });
+    // a lean, deep-chested wolf: torso, brisket, lowered neck and long head
+    addTube(mb, [[0, 0.8, -0.55, 0.17], [0, 0.84, -0.25, 0.2], [0, 0.88, 0.1, 0.25], [0, 0.9, 0.34, 0.25], [0, 0.98, 0.55, 0.18]], { seg: 6, subdiv: 2, colFn: () => fur() });
+    addTube(mb, [[0, 0.64, 0.02, 0.12], [0, 0.6, 0.28, 0.17], [0, 0.7, 0.5, 0.13]], { seg: 6, colFn: () => fur(0.005) });
+    addTube(mb, [[0, 0.98, 0.5, 0.17], [0, 0.93, 0.72, 0.15], [0, 0.87, 0.88, 0.14], [0, 0.81, 1.05, 0.1], [0, 0.76, 1.22, 0.06], [0, 0.74, 1.31, 0.03]], { seg: 6, colFn: () => fur(0.012) });
+    // a snarling, open jaw with pale fangs
+    addTube(mb, [[0, 0.76, 0.9, 0.08], [0, 0.65, 1.08, 0.06], [0, 0.6, 1.22, 0.025]], { seg: 5, colFn: () => fur() });
+    for (const sg of [-1, 1]) {
+      addTube(mb, [[0.035 * sg, 0.74, 1.2, 0.014], [0.035 * sg, 0.67, 1.21, 0.0]], { seg: 3, subdiv: 1, colFn: () => rgba(0.6, 0.57, 0.5, CLS.CHAR) });
+      // tall pointed ears laid back
+      addTube(mb, [[0.08 * sg, 0.96, 0.84, 0.055], [0.11 * sg, 1.09, 0.79, 0.035], [0.12 * sg, 1.22, 0.72, 0.0]], { seg: 4, colFn: () => fur(0.01) });
+    }
+    // a hackled mane: long spikes over the neck and shoulders, shortening to bristles along the back
+    for (let i = 0; i < 13; i++) {
+      const z = 0.82 - i * 0.11;
+      const y = 0.8 + (Math.min(Math.max(z, -0.55), 0.55) + 0.55) / 1.1 * 0.18 + 0.17;
+      const big = Math.max(0.12, 1 - Math.abs(i - 3) / 4.5); // tallest at the shoulders
+      const bx = (rng() - 0.5) * 0.12;
+      const tip = [bx * 1.6 + (rng() - 0.5) * 0.1, y + 0.06 + big * 0.36 + rng() * 0.06, z - 0.18 - big * 0.08];
+      addTube(mb, [[bx, y - 0.04, z, 0.06 + big * 0.045], [(bx + tip[0]) / 2, (y + tip[1]) / 2, z - 0.09, 0.035 + big * 0.015], [tip[0], tip[1], tip[2], 0.0]], { seg: 4, subdiv: 1, colFn: () => fur(0.015) });
+      if (i > 0 && i < 7) for (const sg of [-1, 1]) {
+        // the ruff fans out round the neck and chest
+        addTube(mb, [[0.16 * sg, y - 0.12, z, 0.06], [0.3 * sg, y + 0.02 + big * 0.14, z - 0.18, 0.0]], { seg: 4, subdiv: 1, colFn: () => fur(0.01) });
+        addTube(mb, [[0.18 * sg, y - 0.3, z + 0.02, 0.05], [0.31 * sg, y - 0.3 + big * 0.05, z - 0.2, 0.0]], { seg: 4, subdiv: 1, colFn: () => fur(0.006) });
       }
     }
-    // tucked belly line, pelvis, whip tail, wire whiskers
-    addTube(mb, [[0, 0.43, 0.42, 0.02], [0, 0.5, 0.0, 0.016], [0, 0.66, -0.35, 0.014], [0, 0.74, -0.52, 0.02]], { seg: 4, colFn: () => bone() });
-    addLathe(mb, [[0.0, -0.08], [0.1, -0.04], [0.12, 0.03], [0.0, 0.08]], { seg: 6, y: 0.78, z: -0.5, sx: 1.3, colFn: () => bone() });
-    addTube(mb, [[0, 0.76, -0.6, 0.03], [0, 0.7, -0.85, 0.022], [0, 0.55, -1.0, 0.012], [0.05, 0.42, -1.05, 0.003]], { seg: 4, colFn: () => bone() });
-    for (const s of [-1, 1]) for (let w = 0; w < 2; w++) addTube(mb, [[0.025 * s, 0.97, 1.2, 0.006], [0.18 * s, 0.98 + w * 0.04, 1.28, 0.004], [0.36 * s, 0.95 + w * 0.08, 1.33, 0.002]], { seg: 3, subdiv: 2, colFn: () => bone(0.08) });
-    this.part(mb, this.body);
-    // swallowed sparks glowing inside the ribcage
+    // a heavy brush of a tail
+    addTube(mb, [[0, 0.82, -0.58, 0.08], [0, 0.8, -0.82, 0.15], [0, 0.7, -1.08, 0.14], [0, 0.6, -1.3, 0.07], [0, 0.55, -1.42, 0.0]], { seg: 6, colFn: () => fur() });
+    for (let k = 0; k < 7; k++) {
+      const z = -0.72 - k * 0.1, y = 0.82 - k * 0.04, a = rng() * 6.28;
+      addTube(mb, [[Math.cos(a) * 0.08, y + Math.sin(a) * 0.08, z, 0.05], [Math.cos(a) * 0.2, y + Math.sin(a) * 0.2, z - 0.16, 0.0]], { seg: 4, subdiv: 1, colFn: () => fur(0.008) });
+    }
+    // burning amber eyes
     const em = new MeshBuilder();
-    for (let i = 0; i < 4; i++) addSphere(em, { y: 0.6 + (i % 2) * 0.12, z: 0.26 - i * 0.14, x: (i % 2 ? 0.03 : -0.03), r: 0.05, segW: 5, segH: 3, colFn: () => rgba(1.0, 0.5, 0.15, CLS.GLOW) });
-    this.part(em, this.body, Monster.matEmber);
-    // four jointed legs (front: straight; hind: dog hock bent backward)
+    for (const sg of [-1, 1]) addSphere(em, { x: 0.082 * sg, y: 0.885, z: 1.0, r: 0.042, sy: 0.7, segW: 6, segH: 4, colFn: () => rgba(1.0, 0.68, 0.2, CLS.GLOW) });
+    mb.append(em.selfLit());
+    // ash smoking off its back
+    const ash = new MeshBuilder();
+    // a plume of fine ash: dense over the shoulders, thinning as it rises and trails back
+    for (let k = 0; k < 40; k++) {
+      const up = rng() * rng();
+      const r = 0.022 + rng() * 0.05 * (1 - up * 0.5);
+      addBox(ash, { x: (rng() - 0.5) * (0.3 + up * 0.5), y: 1.12 + up * 1.1, z: 0.35 - rng() * 0.7 - up * 0.6, sx: r, sy: r, sz: r, rot: rng() * 6, tilt: rng() * 3, col: shade(0.01 + rng() * 0.05, CLS.CHAR, 1) });
+    }
+    mb.append(ash);
+    this.part(mb, this.body, Monster.matSway); // body, eyes and ash: one draw call
+    // four jointed legs (front: straight; hind: dog hock bent backward) with clawed paws
     this.legs = [];
     const leg = (x, y, z, hind, phase) => {
       const pivot = new pc.Entity('leg');
@@ -243,14 +299,15 @@ export class AshHound extends Monster {
       this.body.addChild(pivot);
       const lb = new MeshBuilder();
       const pts = hind
-        ? [[0, 0, 0, 0.07], [0, -0.22, 0.13, 0.045], [0, -0.48, -0.1, 0.026], [0, -0.74, -0.03, 0.022], [0, -0.78, 0.06, 0.028]]
-        : [[0, 0, 0, 0.05], [0, -0.26, 0.04, 0.034], [0, -0.52, -0.02, 0.024], [0, -0.74, 0.01, 0.021], [0, -0.8, 0.07, 0.028]];
-      addTube(lb, pts, { seg: 5, colFn: () => bone() });
+        ? [[0, 0, 0, 0.13], [0, -0.25, 0.15, 0.09], [0, -0.5, -0.12, 0.05], [0, -0.76, -0.04, 0.045], [0, -0.8, 0.07, 0.05]]
+        : [[0, 0, 0, 0.1], [0, -0.28, 0.04, 0.075], [0, -0.55, -0.02, 0.05], [0, -0.77, 0.02, 0.045], [0, -0.81, 0.1, 0.05]];
+      addTube(lb, pts, { seg: 5, colFn: () => fur() });
+      for (let c = -1; c <= 1; c++) addTube(lb, [[c * 0.03, -0.8, 0.12, 0.016], [c * 0.04, -0.83, 0.2, 0.0]], { seg: 3, subdiv: 1, colFn: () => fur(-0.005) });
       this.part(lb, pivot);
       this.legs.push({ pivot, phase, hind });
     };
-    leg(-0.1, 0.84, 0.3, false, 0); leg(0.1, 0.84, 0.3, false, 0.6);
-    leg(-0.1, 0.78, -0.48, true, Math.PI); leg(0.1, 0.78, -0.48, true, Math.PI + 0.6);
+    leg(-0.13, 0.82, 0.36, false, 0); leg(0.13, 0.82, 0.36, false, 0.6);
+    leg(-0.13, 0.8, -0.45, true, Math.PI); leg(0.13, 0.8, -0.45, true, Math.PI + 0.6);
     this.gaitT = 0;
     this.reset();
   }
@@ -345,27 +402,40 @@ export class GloomMoth extends Monster {
     this.group = perch.group;
     const rng = mulberry(91 + Math.round(perch.x * 3));
     const body = new MeshBuilder();
-    // segmented furry body: abdomen -> thorax -> head
-    addTube(body, [[0, -0.95, -0.05, 0.03], [0, -0.7, -0.03, 0.1], [0, -0.4, 0, 0.13], [0, -0.12, 0, 0.16], [0, 0.08, 0.02, 0.15], [0, 0.2, 0.05, 0.09], [0, 0.3, 0.08, 0.1], [0, 0.4, 0.1, 0.02]], {
-      seg: 8, colFn: (t) => shade(0.02 + t * 0.03),
-    });
-    // feathered antennae
-    for (const s of [-1, 1]) {
-      const ant = [[0.03 * s, 0.38, 0.12, 0.012], [0.14 * s, 0.56, 0.22, 0.01], [0.28 * s, 0.66, 0.18, 0.006]];
-      addTube(body, ant, { seg: 3, colFn: () => shade(0.05) });
-      for (let k = 0; k < 6; k++) {
-        const t = 0.25 + k * 0.12;
-        const bx = 0.03 * s + (0.25 * s) * t, by = 0.38 + 0.28 * t, bz = 0.12 + 0.08 * t;
-        addTube(body, [[bx, by, bz, 0.005], [bx + 0.03 * s, by + 0.06, bz + 0.05, 0.002]], { seg: 3, subdiv: 1, colFn: () => shade(0.05) });
+    const chit = (v = 0, sw = 0) => shade(0.02 + v, CLS.CHAR, sw);
+    // head, thorax and a long hanging abdomen
+    addSphere(body, { y: 0.3, z: 0.16, r: 0.12, segW: 6, segH: 4, jitter: 0.2, rng, colFn: () => chit(0.01) });
+    addSphere(body, { y: 0.1, z: 0.0, r: 0.16, sy: 1.15, segW: 6, segH: 4, jitter: 0.15, rng, colFn: () => chit() });
+    addTube(body, [[0, -0.02, -0.06, 0.13], [0, -0.3, -0.13, 0.17], [0, -0.6, -0.16, 0.15], [0, -0.86, -0.13, 0.08], [0, -0.98, -0.1, 0.0]], { seg: 6, colFn: () => chit(0.005) });
+    // whip antennae
+    for (const sg of [-1, 1]) addTube(body, [[0.04 * sg, 0.38, 0.2, 0.012], [0.14 * sg, 0.62, 0.3, 0.008], [0.3 * sg, 0.76, 0.22, 0.0]], { seg: 3, colFn: () => chit(0.03) });
+    // six long, jointed, dangling legs
+    for (const sg of [-1, 1]) {
+      for (let k = 0; k < 3; k++) {
+        const z = 0.1 - k * 0.1;
+        const kx = 0.35 + k * 0.08, ky = 0.22 - k * 0.05;
+        addTube(body, [[0.08 * sg, 0.05, z, 0.022], [kx * sg, ky, z + 0.12 - k * 0.12, 0.016], [(kx + 0.12) * sg, -0.45 - k * 0.1, z + 0.18 - k * 0.2, 0.012], [(kx + 0.08) * sg, -1.15 - k * 0.12, z + 0.12 - k * 0.22, 0.0]], { seg: 4, subdiv: 2, colFn: () => chit(0.0) });
       }
-      // dangling legs
-      for (let k = 0; k < 3; k++) addTube(body, [[0.08 * s, -0.05 - k * 0.12, 0.06, 0.014], [0.2 * s, -0.25 - k * 0.12, 0.12, 0.01], [0.18 * s, -0.55 - k * 0.1, 0.1, 0.004]], { seg: 3, colFn: () => shade(0.03) });
     }
-    this.part(body);
-    // tattered cape-wings: ragged membranes that droop like a cloak
-    this.wings = [-1, 1].map((s) => {
+    // clusters of ember eyes on the head and glowing pocks on the abdomen
+    const em = new MeshBuilder();
+    for (const [ex, ey, ez, er] of [[-0.06, 0.34, 0.27, 0.03], [0.06, 0.34, 0.27, 0.03], [-0.03, 0.27, 0.27, 0.02], [0.03, 0.27, 0.27, 0.02], [-0.07, -0.34, 0.03, 0.035], [0.06, -0.48, 0.0, 0.03], [-0.01, -0.62, 0.0, 0.025], [0.07, -0.26, 0.02, 0.02]]) {
+      addSphere(em, { x: ex, y: ey, z: ez, r: er, segW: 5, segH: 3, colFn: () => rgba(1.0, 0.66, 0.2, CLS.GLOW) });
+    }
+    body.append(em.selfLit());
+    // motes of darkness drifting round it
+    const motes = new MeshBuilder();
+    for (let k = 0; k < 10; k++) {
+      const r = 0.04 + rng() * 0.06;
+      const a = rng() * Math.PI * 2, d = 0.7 + rng() * 0.7;
+      addBox(motes, { x: Math.cos(a) * d, y: -0.6 + rng() * 1.4, z: Math.sin(a) * d, sx: r, sy: r, sz: r, rot: rng() * 6, tilt: rng() * 3, col: shade(0.0, CLS.CHAR, 1) });
+    }
+    body.append(motes);
+    this.part(body, this.root, Monster.matSway);
+    // torn, angular wings: two pairs of ragged membranes with dark veins
+    this.wings = [-1, 1].map((sg) => {
       const pivot = new pc.Entity('wing');
-      pivot.setLocalPosition(0.1 * s, 0.05, 0);
+      pivot.setLocalPosition(0.1 * sg, 0.12, 0);
       this.root.addChild(pivot);
       const mb = new MeshBuilder();
       const rag = (pts) => {
@@ -374,21 +444,22 @@ export class GloomMoth extends Monster {
           const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
           for (let k = 0; k < 3; k++) {
             const t = k / 3;
-            const notch = i > 1 && rng() < 0.35 ? 0.65 + rng() * 0.25 : 1; // torn notches
+            const notch = i > 1 && rng() < 0.4 ? 0.55 + rng() * 0.3 : 1; // torn notches
             const x = (ax + (bx - ax) * t) * notch, y = (ay + (by - ay) * t) * notch;
-            out.push([x * s, y, -0.12 * x * x]);
+            out.push([x * sg, y, -0.1 * x * x]);
           }
         }
         const l = pts[pts.length - 1];
-        out.push([l[0] * s, l[1], -0.12 * l[0] * l[0]]);
+        out.push([l[0] * sg, l[1], -0.1 * l[0] * l[0]]);
         return out;
       };
-      const fore = [[0.05, 0.12], [0.45, 0.4], [0.95, 0.48], [1.3, 0.3], [1.25, -0.02], [1.0, -0.3], [0.65, -0.5], [0.3, -0.55], [0.08, -0.25]];
-      const hind = [[0.05, -0.15], [0.55, -0.3], [0.85, -0.65], [0.6, -1.0], [0.3, -0.95], [0.08, -0.45]];
-      addFan(mb, [0, 0, 0], rag(fore), (t) => shade(0.015 + Math.sin(t * 9) * 0.006, CLS.CHAR, 1));
-      addFan(mb, [0, -0.1, 0], rag(hind), () => shade(0.012, CLS.CHAR, 1));
+      const fore = [[0.05, 0.15], [0.5, 0.75], [1.05, 1.2], [1.45, 1.05], [1.2, 0.55], [0.95, 0.1], [0.55, -0.05], [0.1, -0.02]];
+      const hind = [[0.05, -0.05], [0.6, -0.15], [1.15, -0.05], [1.0, -0.45], [0.55, -0.7], [0.12, -0.3]];
+      addFan(mb, [0, 0, 0], rag(fore), (t) => shade(0.05 + Math.sin(t * 11) * 0.015, CLS.CHAR, 1));
+      addFan(mb, [0, -0.05, 0], rag(hind), () => shade(0.045, CLS.CHAR, 1));
+      for (const [vx, vy] of [[1.3, 1.1], [1.0, 0.55], [1.05, -0.3]]) addTube(mb, [[0, 0, 0.01, 0.014], [vx * sg * 0.6, vy * 0.6, 0.01, 0.01], [vx * sg, vy, -0.08, 0.0]], { seg: 3, subdiv: 1, colFn: () => shade(0.0) });
       this.part(mb, pivot, Monster.matDouble);
-      return { pivot, s };
+      return { pivot, s: sg };
     });
     this.reset();
   }
@@ -476,9 +547,12 @@ export class BellWarden extends Monster {
       seg: 18, colFn: (t) => rgba(0.25 - t * 0.04, 0.18 - t * 0.03, 0.1, CLS.STONE),
     });
     addTube(mb, [[0, 3.6, 0, 0.0], [0, 3.72, 0, 0.12], [0, 3.86, 0, 0.0]], { seg: 6, colFn: () => rgba(0.2, 0.15, 0.09, CLS.STONE) });
-    addTube(mb, [[0.35, 3.35, 0.47, 0.018], [0.45, 3.0, 0.55, 0.015], [0.5, 2.75, 0.63, 0.012], [0.62, 2.45, 0.72, 0.01]], { seg: 3, colFn: () => shade(-0.05) }); // the crack
     this.body = new pc.Entity('wardenBody');
     this.root.addChild(this.body);
+    // ember light leaking through the crack in the bell
+    const crack = new MeshBuilder();
+    addTube(crack, [[0.35, 3.35, 0.49, 0.028], [0.45, 3.0, 0.57, 0.024], [0.5, 2.75, 0.65, 0.02], [0.62, 2.45, 0.74, 0.014]], { seg: 4, colFn: () => rgba(1.0, 0.6, 0.18, CLS.GLOW) });
+    mb.append(crack.selfLit());
     this.part(mb, this.body, Monster.matSway);
     this.reset();
   }
@@ -568,6 +642,9 @@ function mulberry(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+// a fixed stream for the facet shading, so every load cuts the same slate
+Monster.rng = mulberry(90210);
 
 export function initMonsterMaterials() {
   Monster.mat = worldMaterial({});

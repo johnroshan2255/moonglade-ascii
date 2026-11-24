@@ -53,6 +53,16 @@
   <div id="stick" hidden><div id="stickKnob"></div></div>
 
   <!-- Settings -->
+  <!-- An old note from a standing stone -->
+  <div id="note" hidden role="dialog" aria-labelledby="noteTitle">
+    <div class="paper">
+      <h3 id="noteTitle"></h3>
+      <div id="noteBody"></div>
+      <pre id="noteArt" hidden></pre>
+      <p id="noteFold"></p>
+    </div>
+  </div>
+
   <div id="settings" hidden>
     <div class="panel">
       <h2>Settings</h2>
@@ -91,7 +101,7 @@
       <p class="help">
         Move: WASD / left stick / drag left side &nbsp; Run: Shift &nbsp; Sneak: C or Ctrl (touch: tilt lightly)<br />
         Shutter lantern: hold Space / right mouse / RB &nbsp; Iron staff: E / click / A (hold to crank)<br />
-        Scorched Sight (ASCII): V / Y &nbsp; Show the way: H / tap EMBERS<br />
+        <!-- ASCII view switched off for now: Scorched Sight (ASCII): V / Y &nbsp; -->Show the way: H / tap EMBERS<br />
         Camera: drag / Q R / right stick &nbsp; Zoom: wheel / pinch &nbsp; Fullscreen: F</p>
       <button id="btnClose">Resume</button>
       <button id="btnRestart" class="danger">Restart journey</button>

@@ -12,6 +12,7 @@ import { LINES, LAYOUT } from './story.js';
 import * as sfx from './audio.js';
 import { emberCoreMesh } from './meshes.js';
 import { worldMaterial } from './shaders.js';
+import { loadModels } from './models.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -90,12 +91,22 @@ export async function startGame(loader) {
   });
   const savedQ = store.get('quality', 'auto');
   let glyph = store.get('glyphSize', 's');
-  let asciiOn = store.get('ascii', '1') !== '0';
+  // The ASCII view ("Scorched Sight") is SWITCHED OFF: the game always shows the normal 3D view.
+  // To bring it back: restore the stored preference on the next line and un-comment the three
+  // blocks marked "ASCII OFF" below (button + V key, gamepad / touch press, shader warm-up).
+  // let asciiOn = store.get('ascii', '1') !== '0';
+  let asciiOn = false;
   let palette = store.get('palette', 'color');
+
+  // models authored in Blender (boulders, stepping slabs, the gate arch); the game falls back to
+  // its procedural meshes if the pack cannot be loaded
+  loader.stage('carving the old stones', 0.04);
+  await loadModels('./models/glade.hwm');
 
   const ascii = new AsciiRenderer(app);
   const layers = { world: ascii.layerWorld, reflect: ascii.layerReflect };
   const world = new World(app, layers, tier);
+  world.camera = ascii.sceneCam.camera;
   const steps = world.steps();
   for (let i = 0; i < steps.length; i++) {
     loader.stage(steps[i][0], 0.1 + (i / steps.length) * 0.55);
@@ -154,8 +165,8 @@ export async function startGame(loader) {
   // Mood: cold, dim moonlight; pale haze swallows the distance; the lantern is the only warmth.
   const HAZE = [0.3, 0.355, 0.36];
   u.moonCol.setValue(new Float32Array([0.3, 0.36, 0.44]));
-  u.skyAmb.setValue(new Float32Array([0.115, 0.15, 0.16]));
-  u.groundAmb.setValue(new Float32Array([0.025, 0.027, 0.03]));
+  u.skyAmb.setValue(new Float32Array([0.095, 0.125, 0.135]));
+  u.groundAmb.setValue(new Float32Array([0.018, 0.019, 0.022]));
   u.haze.setValue(new Float32Array(HAZE));
   const monoU = U('uMono');
   monoU.setValue(palette === 'mono' ? 1 : 0);
@@ -176,9 +187,9 @@ export async function startGame(loader) {
     ascii.sceneCam.camera.farClip = q.fog[1] + 4;
     v3.fog[0] = q.fog[0];
     v3.fog[1] = q.fog[1];
-    v3.fog[2] = 0.6; // ground-mist density
+    v3.fog[2] = 0.55; // ground-mist density
     v3.fog[3] = 0.75; // ground-mist height falloff
-    ascii.blitMat.setParameter('uBlur', q.blur);
+    ascii.blitMat.setParameter('uSharp', q.sharp);
     resized();
   }
   function resized() {
@@ -247,8 +258,10 @@ export async function startGame(loader) {
     v3.moonSky[2] = Math.cos(az) * Math.cos(el);
 
     // reflection camera only when the pond is actually on screen
-    const pondVisible = ascii.sceneCam.camera.frustum.containsSphere(world.water.sphere) > 0;
-    ascii.updateReflection(camPos, camTarget, WORLD.waterY, pondVisible && q.refl > 0);
+    // the mirror is only drawn when the lake is on screen and nearer than the fog
+    const pondNear = Math.hypot(camPos.x - WORLD.pond.x, camPos.z - WORLD.pond.z) - world.water.sphere.radius < v3.fog[1];
+    const pondVisible = pondNear && ascii.sceneCam.camera.frustum.containsSphere(world.water.sphere) > 0;
+    ascii.updateReflection(camPos, camTarget, WORLD.waterY, pondVisible && q.refl > 0, performance.now() / 1000);
   }
 
   // ---------------------------------------------------------------- the story
@@ -342,9 +355,13 @@ export async function startGame(loader) {
     resized();
     syncAsciiBtn();
   };
-  btnAscii.addEventListener('click', (e) => { e.stopPropagation(); setAscii(!asciiOn); });
+  // ASCII OFF (1/3): the toggle button and the V key
+  // btnAscii.addEventListener('click', (e) => { e.stopPropagation(); setAscii(!asciiOn); });
+  btnAscii.style.display = 'none';
+  void setAscii; // kept for when the view comes back
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyV' && !(e.target instanceof HTMLSelectElement)) setAscii(!asciiOn);
+    // if (e.code === 'KeyV' && !(e.target instanceof HTMLSelectElement)) setAscii(!asciiOn);
+    void e;
   });
   syncAsciiBtn();
   document.addEventListener('visibilitychange', () => { app.timeScale = document.hidden ? 0 : 1; });
@@ -363,9 +380,12 @@ export async function startGame(loader) {
     if (!paused) time += dt;
 
     input.poll(dt);
-    if (input.sightPressed) setAscii(!asciiOn);
+    // ASCII OFF (2/3): gamepad Y / touch press
+    // if (input.sightPressed) setAscii(!asciiOn);
     player.lanternWorldPos(lantern);
-    const playing = started && !paused;
+    // an open note on a standing stone pauses the world (monsters too) until it is folded
+    if (started && !paused && gameplay.reading) gameplay.readingFrame(dt, input);
+    const playing = started && !paused && !gameplay.reading;
     if (introT > 0 && playing) {
       introT = Math.max(0, introT - dt);
       const e = INTRO - introT;
@@ -397,12 +417,13 @@ export async function startGame(loader) {
       });
     }
     updateCamera(dt);
-    world.update(camTarget.x, camTarget.z, camPos.x, camPos.z);
+    world.fogEnd = v3.fog[1] || q.fog[1];
+    world.update(camTarget.x, camTarget.z, camPos.x, camPos.z, cam.yaw);
     if (warmFrames > 0) {
       // loading screen: draw every cluster + reflections so every shader/pipeline compiles now
       world.showEverything();
       ascii.sceneCam.camera.frustumCulling = false;
-      ascii.updateReflection(camPos, camTarget, WORLD.waterY, true);
+      ascii.updateReflection(camPos, camTarget, WORLD.waterY, true, 0, true);
       --warmFrames;
       if (warmFrames === WARM_PER_VIEW) {
         // first half compiled the other view; now compile the one the player will start in
@@ -491,12 +512,14 @@ export async function startGame(loader) {
   // ---------------------------------------------------------------- shader warm-up
   // Both views are warmed: a few frames in the view the player is NOT starting in, then a few
   // in the one they are, so toggling the ASCII filter later never stalls on shader compiles.
-  loader.stage(`compiling shaders (${asciiOn ? 'normal' : 'ASCII'} view)`, 0.72);
+  // ASCII OFF (3/3): only the normal view is warmed up. With ASCII back, warm the other view first:
+  //   loader.stage(`compiling shaders (${asciiOn ? 'normal' : 'ASCII'} view)`, 0.72);
+  //   ascii.setOptions({ ascii: !asciiOn }); resized(); warmFrames = WARM_PER_VIEW * 2;
+  loader.stage('compiling shaders', 0.72);
   await nextFrame();
   const warmed = new Promise((resolve) => { onWarm = resolve; });
-  ascii.setOptions({ ascii: !asciiOn });
   resized();
-  warmFrames = WARM_PER_VIEW * 2;
+  warmFrames = WARM_PER_VIEW;
   app.start(); // first frames compile every shader variant behind the loading screen
   await warmed;
   loader.stage('settling in', 0.92);

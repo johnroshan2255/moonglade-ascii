@@ -4,13 +4,16 @@
 // Runtime: watch the real frame time and step the level down quickly when we miss the target,
 // up slowly (with hysteresis + cooldown) when there is plenty of headroom.
 
+// nd = 3D resolution in CSS px (capped at native); sharp = how much the final pass sharpens.
+// lod = metres from the camera focus within which the detailed meshes (the boulders authored in
+// Blender, full bare trees and brambles) are drawn; beyond it the light ones take over.
 export const LEVELS = [
   // 0 "potato": old / low-end phones
-  { name: 'potato', dpr: 2.0, nd: 0.6, ss: 1, refl: 0, grass: 0.0, fireflies: 40, drawDistance: 30, fog: [4, 25], blur: 0 },
-  { name: 'low', dpr: 2.5, nd: 0.8, ss: 1, refl: 0, grass: 0.4, fireflies: 90, drawDistance: 34, fog: [5, 28], blur: 0 },
-  { name: 'medium', dpr: 3.0, nd: 1.0, ss: 1, refl: 0.5, grass: 0.7, fireflies: 160, drawDistance: 38, fog: [6, 32], blur: 0.004 },
-  { name: 'high', dpr: 3.0, nd: 1.5, ss: 2, refl: 0.5, grass: 1.0, fireflies: 260, drawDistance: 44, fog: [7, 37], blur: 0.006 },
-  { name: 'ultra', dpr: 3.0, nd: 2.0, ss: 2, refl: 1.0, grass: 1.0, fireflies: 400, drawDistance: 50, fog: [8, 42], blur: 0.007 },
+  { name: 'potato', dpr: 2.0, nd: 0.9, ss: 1, refl: 0, grass: 0.0, fireflies: 40, drawDistance: 30, fog: [4, 25], sharp: 0.5, lod: 6 },
+  { name: 'low', dpr: 2.5, nd: 1.0, ss: 1, refl: 0, grass: 0.4, fireflies: 90, drawDistance: 34, fog: [5, 28], sharp: 0.45, lod: 8 },
+  { name: 'medium', dpr: 3.0, nd: 1.25, ss: 1, refl: 0.5, grass: 0.7, fireflies: 160, drawDistance: 38, fog: [6, 32], sharp: 0.35, lod: 10 },
+  { name: 'high', dpr: 3.0, nd: 1.5, ss: 2, refl: 0.5, grass: 1.0, fireflies: 260, drawDistance: 44, fog: [7, 37], sharp: 0.25, lod: 13 },
+  { name: 'ultra', dpr: 3.0, nd: 2.0, ss: 2, refl: 1.0, grass: 1.0, fireflies: 400, drawDistance: 50, fog: [8, 42], sharp: 0.2, lod: 16 },
 ];
 
 export function isMobile() {

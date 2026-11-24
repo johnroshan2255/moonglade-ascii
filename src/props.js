@@ -1,15 +1,27 @@
 // Interactive story props. Each returns entities + small animation handles; gameplay.js drives them.
 import * as pc from 'playcanvas';
 import { CLS, worldMaterial } from './shaders.js';
-import { MeshBuilder, rgba, addBox, addCylinder, addSphere, emberCoreMesh } from './meshes.js';
-import { LAYOUT } from './story.js';
+import { MeshBuilder, rgba, addBox, addCylinder, addSphere, addLathe, emberCoreMesh, faceted } from './meshes.js';
+import { LAYOUT, STONES, regionOf } from './story.js';
 import { WORLD, SHRINE_Y } from './world.js';
 import { mulberry32 } from './noise.js';
+import { appendModel } from './models.js';
 
 const wood = (v = 0) => rgba(0.16 + v, 0.13 + v, 0.1 + v, CLS.GROUND);
 const stone = (v = 0) => rgba(0.28 + v, 0.28 + v, 0.29 + v, CLS.STONE);
 const iron = (v = 0) => rgba(0.17 + v, 0.17 + v, 0.18 + v, CLS.STONE);
 const brass = (v = 0) => rgba(0.55 + v, 0.42 + v, 0.2 + v, CLS.STONE);
+const moss = (v = 0) => rgba(0.12 + v, 0.15 + v, 0.09 + v * 0.5, CLS.STONE);
+
+/** A flat glowing stroke in the XY plane at depth z, visible from the side 'face' points to. */
+function stroke(mb, a, b, z, w, face, col) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+  const px = (-dy / l) * w * 0.5, py = (dx / l) * w * 0.5;
+  const v = [[a[0] - px, a[1] - py], [a[0] + px, a[1] + py], [b[0] + px, b[1] + py], [b[0] - px, b[1] - py]]
+    .map(([x, y]) => mb.vert(x, y, z, 0, 0, face, col));
+  mb.tri(v[0], v[1], v[2]); mb.tri(v[0], v[2], v[3]);
+  mb.tri(v[0], v[2], v[1]); mb.tri(v[0], v[3], v[2]);
+}
 
 export class Props {
   constructor(app, world, layers) {
@@ -22,6 +34,8 @@ export class Props {
     this.root = new pc.Entity('props');
     app.root.addChild(this.root);
 
+    // Everything that never moves is baked into one mesh per region (see fixed()).
+    this.staticBins = { south: new MeshBuilder(), lake: new MeshBuilder(), central: new MeshBuilder(), north: new MeshBuilder(), mirror: new MeshBuilder() };
     this.buildChimes();
     this.buildMeadowGate();
     this.buildValves();
@@ -33,6 +47,8 @@ export class Props {
     this.buildBeacons();
     this.buildExitGate();
     this.buildSunbeams();
+    this.buildStones();
+    this.finishStatic();
     for (const r of world.rocks) this.targets.push({ x: r[0], z: r[1], kind: 'rock' });
     for (const p of world.pillars) this.targets.push({ x: p[0], z: p[1], kind: 'rock' });
   }
@@ -52,6 +68,44 @@ export class Props {
 
   y(x, z) { return this.world.height(x, z); }
 
+  /**
+   * Bakes a mesh that never moves into the static geometry of its region, at pos, turned by the
+   * Euler angles (degrees). A region's posts, piers and plinths are then one draw call instead
+   * of dozens. reflect = also part of the lake's mirror.
+   */
+  fixed(mb, pos, euler = null, { reflect = false } = {}) {
+    const q = new pc.Quat();
+    if (euler) q.setFromEulerAngles(euler[0], euler[1], euler[2]);
+    const m = new pc.Mat4().setTRS(new pc.Vec3(pos[0], pos[1], pos[2]), q, pc.Vec3.ONE);
+    const bins = [this.staticBins[regionOf(pos[0], pos[2])]];
+    if (reflect) bins.push(this.staticBins.mirror);
+    const v = new pc.Vec3(), n = new pc.Vec3();
+    for (const bin of bins) {
+      const base = bin.count;
+      for (let k = 0; k < mb.count; k++) {
+        m.transformPoint(v.set(mb.p[k * 3], mb.p[k * 3 + 1], mb.p[k * 3 + 2]), v);
+        m.transformVector(n.set(mb.n[k * 3], mb.n[k * 3 + 1], mb.n[k * 3 + 2]), n);
+        bin.vert(v.x, v.y, v.z, n.x, n.y, n.z, [mb.c[k * 4], mb.c[k * 4 + 1], mb.c[k * 4 + 2], mb.c[k * 4 + 3]]);
+      }
+      for (let k = 0; k < mb.i.length; k++) bin.i.push(mb.i[k] + base);
+    }
+  }
+
+  finishStatic() {
+    for (const [region, bin] of Object.entries(this.staticBins)) {
+      if (!bin.count) continue;
+      const e = new pc.Entity(`static-${region}`);
+      e.addComponent('render', {
+        meshInstances: [new pc.MeshInstance(bin.build(this.device), this.mat)],
+        castShadows: false,
+        receiveShadows: false,
+        layers: region === 'mirror' ? [this.layers.reflect.id] : [this.layers.world.id],
+      });
+      this.root.addChild(e);
+    }
+    this.staticBins = null;
+  }
+
   // --------------------------------------------------------------- puzzle 1: three chimes + meadow gate
   buildChimes() {
     this.chimes = [];
@@ -64,7 +118,7 @@ export class Props {
       addBox(mb, { x: 0.32, y: 2.2, sx: 0.8, sy: 0.1, sz: 0.1, col: wood(0.02) });
       // tally notches: one, two or three pale cuts (pitch rank)
       for (let i = 0; i < c.rank; i++) addBox(mb, { x: 0.0, y: 1.35 + i * 0.16, z: 0.085, sx: 0.12, sy: 0.035, sz: 0.02, col: rgba(0.55, 0.52, 0.46, CLS.STONE) });
-      this.ent('post', mb, { parent: base });
+      this.fixed(mb, [c.x, this.y(c.x, c.z) - 0.05, c.z]);
       // the hanging brass tube (swings when struck)
       const pivot = new pc.Entity('chimePivot');
       pivot.setLocalPosition(0.55, 2.15, 0);
@@ -88,7 +142,7 @@ export class Props {
     const posts = new MeshBuilder();
     addBox(posts, { x: -gateHalf - 0.1, y: 1.3, sx: 0.3, sy: 2.6, sz: 0.3, col: wood(-0.02) });
     addBox(posts, { x: gateHalf + 0.1, y: 1.3, sx: 0.3, sy: 2.6, sz: 0.3, col: wood(-0.02) });
-    this.ent('gatePosts', posts, { parent: g });
+    this.fixed(posts, [gateX, this.y(gateX, z), z]);
     const door = new pc.Entity('gateDoor');
     g.addChild(door);
     const pb = new MeshBuilder();
@@ -112,7 +166,8 @@ export class Props {
       this.root.addChild(base);
       const mb = new MeshBuilder();
       addCylinder(mb, { r0: 0.12, r1: 0.1, h: 1.05, seg: 6, colFn: () => iron(-0.03) });
-      this.ent('stem', mb, { parent: base, reflect: true });
+      const bp = base.getPosition();
+      this.fixed(mb, [bp.x, bp.y, bp.z], null, { reflect: true });
       const wheel = new pc.Entity('wheel');
       wheel.setLocalPosition(0, 1.05, 0);
       base.addChild(wheel);
@@ -140,7 +195,9 @@ export class Props {
     for (let i = 0; i < n; i++) {
       const z = c.z0 + ((c.z1 - c.z0) * i) / (n - 1);
       const x = c.x + (rng() - 0.5) * 0.35;
-      addCylinder(mb, { x, y: 0.5, z, r0: 0.95, r1: 0.85, h: 0.42, seg: 7, jitter: 0.12, rng, colFn: (t) => stone(-0.06 + t * 0.06) });
+      // the slab authored in Blender (bevelled, chipped, baked shade) when the model pack is loaded
+      const authored = appendModel(mb, `slab_${i % 4}`, { x, y: 0.92, z, rot: i * 2.4, sx: 0.9, sy: 0.92, sz: 0.9 });
+      if (!authored) addCylinder(mb, { x, y: 0.5, z, r0: 0.95, r1: 0.85, h: 0.42, seg: 7, jitter: 0.12, rng, colFn: (t) => stone(-0.06 + t * 0.06) });
     }
     this.ent('stones', mb, { parent: group, reflect: true });
     this.causeway = { group, up: 0 };
@@ -157,9 +214,8 @@ export class Props {
       // listening stone: a short post with a hanging iron plate (strike it)
       addBox(mb, { x: 0, y: 0.75, z: 0, sx: 0.3, sy: 1.3, sz: 0.3, col: stone(0.02) });
       addBox(mb, { x: 0, y: 1.45, z: 0.22, sx: 0.5, sy: 0.4, sz: 0.04, col: iron(0.05) });
-      const e = this.ent('plate', mb);
-      e.setPosition(p.x, y - 0.03, p.z);
-      const plate = { ...p, i, e, y, pressed: 0 };
+      this.fixed(mb, [p.x, y - 0.03, p.z]);
+      const plate = { ...p, i, y, pressed: 0 };
       this.targets.push({ x: p.x, z: p.z, kind: 'metal', ref: plate });
       return plate;
     });
@@ -172,10 +228,13 @@ export class Props {
     base.setPosition(archX, y, z);
     this.root.addChild(base);
     const mb = new MeshBuilder();
-    addBox(mb, { x: -archHalf - 0.45, y: 2.4, sx: 0.9, sy: 4.8, sz: 1.0, col: stone(0) });
-    addBox(mb, { x: archHalf + 0.45, y: 2.3, sx: 0.9, sy: 4.6, sz: 1.0, col: stone(-0.02) });
-    addBox(mb, { x: 0.1, y: 5.0, sx: archHalf * 2 + 2.4, sy: 0.8, sz: 1.2, tilt: 0.04, col: stone(0.04) });
-    this.ent('archStones', mb, { parent: base });
+    // the round arch of rough-cut blocks authored in Blender; the old lintel gate if the pack is missing
+    if (!appendModel(mb, 'arch_gate')) {
+      addBox(mb, { x: -archHalf - 0.45, y: 2.4, sx: 0.9, sy: 4.8, sz: 1.0, col: stone(0) });
+      addBox(mb, { x: archHalf + 0.45, y: 2.3, sx: 0.9, sy: 4.6, sz: 1.0, col: stone(-0.02) });
+      addBox(mb, { x: 0.1, y: 5.0, sx: archHalf * 2 + 2.4, sy: 0.8, sz: 1.2, tilt: 0.04, col: stone(0.04) });
+    }
+    this.fixed(mb, [archX, y, z]);
     const port = new pc.Entity('portcullis');
     base.addChild(port);
     const pb = new MeshBuilder();
@@ -193,8 +252,7 @@ export class Props {
     addBox(mb, { y: 1.2, sx: 0.16, sy: 2.4, sz: 0.16, col: wood(-0.03) });
     addBox(mb, { x: 0.35, y: 2.3, sx: 0.8, sy: 0.1, sz: 0.1, col: wood() });
     addBox(mb, { x: 0.6, y: 1.7, sx: 0.08, sy: 0.9, sz: 0.3, col: iron(0.06) });
-    const e = this.ent('ironChime', mb);
-    e.setPosition(p.x, this.y(p.x, p.z) - 0.05, p.z);
+    this.fixed(mb, [p.x, this.y(p.x, p.z) - 0.05, p.z]);
     this.targets.push({ x: p.x + 0.6, z: p.z, kind: 'metal' });
   }
 
@@ -204,13 +262,9 @@ export class Props {
     // a cracked bronze bell lying on its side
     const bellMb = new MeshBuilder();
     addCylinder(bellMb, { r0: 0.95, r1: 0.55, h: 1.5, seg: 12, colFn: (t) => rgba(0.36 - t * 0.08, 0.27 - t * 0.06, 0.15, CLS.STONE), capTop: true });
-    const e = this.ent('bell', bellMb);
-    e.setPosition(b.x, SHRINE_Y + 0.85, b.z);
-    e.setEulerAngles(90, 35, 0);
+    this.fixed(bellMb, [b.x, SHRINE_Y + 0.85, b.z], [90, 35, 0]);
     addBox(mb, { sx: 1.6, sy: 0.3, sz: 0.6, col: wood(-0.04) });
-    const beam = this.ent('bellBeam', mb);
-    beam.setPosition(b.x + 1.2, SHRINE_Y + 0.15, b.z - 0.8);
-    beam.setEulerAngles(0, 20, 8);
+    this.fixed(mb, [b.x + 1.2, SHRINE_Y + 0.15, b.z - 0.8], [0, 20, 8]);
     this.world.colliders.add(b.x, b.z, 1.0);
     this.targets.push({ x: b.x, z: b.z, kind: 'bell' });
   }
@@ -226,8 +280,10 @@ export class Props {
       addBox(mb, { y: 1.55, sx: 0.85, sy: 0.12, sz: 0.85, col: stone(0.04) });
       for (const [px, pz] of [[-0.33, -0.33], [0.33, -0.33], [-0.33, 0.33], [0.33, 0.33]]) addBox(mb, { x: px, y: 1.95, z: pz, sx: 0.1, sy: 0.7, sz: 0.1, col: stone(0.02) });
       addBox(mb, { y: 2.35, sx: 1.0, sy: 0.14, sz: 1.0, col: stone(0.05) });
-      const e = this.ent('beacon', mb);
+      this.fixed(mb, [x, SHRINE_Y, z]);
+      const e = new pc.Entity('beacon'); // holds the ember core and the flame
       e.setPosition(x, SHRINE_Y, z);
+      this.root.addChild(e);
       this.world.colliders.add(x, z, 0.5);
       // the ember core sits in the cage once placed; a flame tongue appears when lit
       const coreMat = worldMaterial({ emissive: 0 });
@@ -260,7 +316,7 @@ export class Props {
     addBox(mb, { x: 0, y: 7.4, sx: 8.4, sy: 1.2, sz: 1.8, tilt: 0.03, col: stone(0.02) });
     // carved sun-disc, shattered
     addCylinder(mb, { x: 0, y: 8.2, z: 0.0, r0: 1.0, r1: 1.0, h: 0.3, seg: 10, colFn: () => stone(0.08) });
-    this.ent('gateFrame', mb, { parent: base });
+    this.fixed(mb, [g.x, SHRINE_Y, g.z], [0, -(g.rot * 180) / Math.PI + 90, 0]);
     const slab = new pc.Entity('gateSlab');
     base.addChild(slab);
     const sb = new MeshBuilder();
@@ -273,6 +329,58 @@ export class Props {
     this.world.colliders.add(g.x - nx * 3, g.z - nz * 3, 1.0);
     this.world.walls.push({ id: 'exit', a: [g.x - nx * 2.4, g.z - nz * 2.4], b: [g.x + nx * 2.4, g.z + nz * 2.4], on: true, r: 0.6 });
     this.exitGate = { slab, open: 0, x: g.x, z: g.z };
+  }
+
+  // --------------------------------------------------------------- rune stones: an old note waits at each
+  buildStones() {
+    // the rune: a diamond in a diamond with a stroke above and below, carved through both faces
+    const rb = new MeshBuilder();
+    const ember = rgba(1.0, 0.56, 0.18, CLS.GLOW, 0);
+    for (const side of [1, -1]) {
+      const z = 0.258 * side, R = 0.2, w = 0.04;
+      const d = [[0, R], [R * 0.68, 0], [0, -R], [-R * 0.68, 0]];
+      for (let k = 0; k < 4; k++) stroke(rb, d[k], d[(k + 1) % 4], z, w, side, ember);
+      const r = 0.075;
+      const e = [[0, r], [r * 0.68, 0], [0, -r], [-r * 0.68, 0]];
+      for (let k = 0; k < 4; k++) stroke(rb, e[k], e[(k + 1) % 4], z, w * 0.8, side, ember);
+      stroke(rb, [0, R + 0.06], [0, R + 0.24], z, w, side, ember);
+      stroke(rb, [0, -R - 0.06], [0, -R - 0.24], z, w, side, ember);
+    }
+    const runeMesh = rb.build(this.device);
+
+    this.stones = STONES.map((def, i) => {
+      const rng = mulberry32(300 + i * 17);
+      const y = this.y(def.x, def.z);
+      const lean3 = [(rng() - 0.5) * 6, rng() * 360, (rng() - 0.5) * 6];
+      // a tall standing shard: six flat faces narrowing to a slanted, broken crown, mossed over
+      const mb0 = new MeshBuilder();
+      const slant = 0.25 + rng() * 0.2, lean = (rng() - 0.5) * 0.12;
+      addLathe(mb0, [[0.0, -0.3], [1.02, -0.3], [1.06, 0.45], [1.0, 1.35], [0.93, 2.0], [0.74, 2.5], [0.0, 2.72]], {
+        seg: 6, sx: 0.46, sz: 0.25,
+        warp: (px, py, pz) => { const k = Math.max(0, (py - 1.9) / 0.8); return [px + lean * py, py + px * slant * k, pz]; },
+        colFn: (t) => (t > 0.86 ? moss(rng() * 0.03) : t < 0.2 ? stone(-0.1) : stone(-0.03 + rng() * 0.03)),
+      });
+      const mb = faceted(mb0, 0.07, rng);
+      for (let k = 0; k < 2; k++) {
+        const a = rng() * Math.PI * 2, sz = 0.14 + rng() * 0.12;
+        addBox(mb, { x: Math.cos(a) * 0.75, y: sz * 0.3, z: Math.sin(a) * 0.6, sx: sz * 1.4, sy: sz, sz, rot: rng() * 6.28, tilt: (rng() - 0.5) * 0.8, col: stone(-0.06) });
+      }
+      this.fixed(mb, [def.x, y - 0.12, def.z], lean3);
+      // the glowing rune rides on its own entity so it can dim once the note is read
+      const base = new pc.Entity('runeStone');
+      base.setPosition(def.x, y - 0.12, def.z);
+      base.setEulerAngles(lean3[0], lean3[1], lean3[2]);
+      this.root.addChild(base);
+      const runeMat = worldMaterial({ emissive: 2.6 });
+      const rune = new pc.Entity('rune');
+      rune.addComponent('render', { meshInstances: [new pc.MeshInstance(runeMesh, runeMat)], layers: [this.layers.world.id, this.layers.reflect.id], castShadows: false, receiveShadows: false });
+      rune.setLocalPosition(lean * 1.3, 1.3, 0);
+      rune.setLocalScale(1.3, 1.45, 0.9); // just proud of the shard's flat front and back faces
+      base.addChild(rune);
+      this.world.colliders.add(def.x, def.z, 0.55);
+      this.targets.push({ x: def.x, z: def.z, kind: 'rock' });
+      return { ...def, i, y, e: base, runeMat, read: false, inside: false };
+    });
   }
 
   // --------------------------------------------------------------- the white light

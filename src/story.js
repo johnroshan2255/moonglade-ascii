@@ -77,6 +77,84 @@ export const ITEMS = [
   { id: 12, kind: 'heart', x: S.x, z: S.z, onAltar: true, text: 'Open the gate, or let the dark keep you.' },
 ];
 
+// Old standing stones with a paper tied to them: walk up to one and the note unfolds.
+// Each sits beside a trail just before the puzzle it explains. `art` is an optional ASCII sketch.
+export const STONES = [
+  {
+    id: 'chimes', x: -3.5, z: 41, title: 'The Three Chimes',
+    body: [
+      'Three brass chimes lock the meadow gate. Each post bears notches cut by an old hand: one, two, three.',
+      'Strike them in that order. One notch, then two, then three. Low to high.',
+      'The grey hounds in the grass hunt only what moves. When one growls, stand still until it leaves.',
+    ],
+  },
+  {
+    id: 'valves', x: -0.8, z: 17.2, title: 'The Drowned Valves',
+    body: [
+      'Two iron wheels stand in the shallows: one to the east, one to the west. Hold the staff on each to turn it.',
+      'She who sleeps below wakes to light, to grinding iron, and to eyes that stare at the water.',
+      'Shutter the lantern before you wade. Crank a little, then be still and let the ripples calm. Then crank again.',
+      'When both wheels have turned, the old stones rise and make a road across.',
+    ],
+  },
+  {
+    id: 'arch', x: 14.5, z: -9.5, title: 'The Arch of Two Shadows',
+    body: [
+      'The iron arch to the north will not open for a living hand. It lifts only while BOTH stone plates before it carry weight, and the only weight in this wood belongs to the tall ones.',
+      '1. Stand well back from a plate, lantern shuttered.',
+      '2. Strike the iron sign on the plate\'s post with your staff. You can strike it from far away. A tall one walks to the sound and waits on the plate.',
+      '3. Call the second one to the other plate the same way.',
+      '4. While both stand, the arch rises. Keep your light hidden and walk between them, softly.',
+    ],
+    art: String.raw`
+          ___________
+         |  | ARCH|  |
+         |  |_____|  |
+            /     \
+      [#]--'       '--[#]
+     plate         plate
+       ^             ^
+   strike the    strike the
+     iron          iron`,
+  },
+  {
+    id: 'plates', x: 7.5, z: -13, title: 'Scratched Beneath',
+    body: [
+      'Someone has scratched more under the first note, in a shaking hand:',
+      'They do not wait forever. Twenty heartbeats, perhaps. Call the second one quickly. If one wanders off, call her back.',
+      'If no one comes, she may have drifted too far. Strike the iron again, or throw a sound at a stone nearer to her to walk her closer first.',
+      'If she sees your flame, she leaves the plate and comes for you. Hold the shutter until she gives up.',
+    ],
+  },
+  {
+    id: 'moths', x: -24, z: -7, title: 'On Moths, and the Tall Ones',
+    body: [
+      'Pale moths drift through this wood. One will settle on your lantern and drink the flame blue.',
+      'Shake it off: run, or hold the shutter a moment and let it go in a burst of heat.',
+      'The tall ones are not monsters. Each cradles a small spark of its own. They only want your light put out.',
+      'Some say that a pilgrim carrying three embers, who shuttered the light and stood beside one without moving, long enough, saw her kneel.',
+    ],
+  },
+  {
+    id: 'north', x: 13, z: -28.5, title: 'Where the Fog Thins',
+    body: [
+      'The fog is thinner here. Where pale shafts of white light stab down, do not stand. They burn the ember.',
+      'Four embers light the shrine: one in the meadow, one the lake gives up when a valve turns, one here past the arch, and one at the shrine itself.',
+      'The last hides behind the broken pillar on the shrine\'s west side.',
+      'The shrine lies west of here, along the trail.',
+    ],
+  },
+  {
+    id: 'warden', x: -4, z: -47.6, title: 'The Bell-Warden',
+    body: [
+      'A bell-headed thing guards the shrine. It is blind and hunts by sound alone.',
+      'Sneak (hold C, or tilt the stick lightly) and it will not hear your steps.',
+      'A fallen bronze bell lies on the east side of the shrine. Strike it and the Warden goes to it, leaving the lanterns unguarded.',
+      'Set an ember in each of the four stone lanterns around the altar. When all four burn, the north-west gate rises, and the Warden will come. RUN for the gate.',
+    ],
+  },
+];
+
 // Monster homes.
 export const SPAWNS = {
   hounds: [{ x: -14, z: 36 }, { x: -6, z: 30 }],

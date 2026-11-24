@@ -251,6 +251,11 @@ const SFX = {
     tone(d, t, 2.5, { freq: 60, freqEnd: 28, peak: 0.6, type: 'sine', attack: 0.02 });
     noise(d, t, 2.0, { type: 'highpass', freq: 2000, peak: 0.5, attack: 0.02 });
   },
+  paper(d, t) {
+    // dry old paper unfolding: a few crackles over a soft rustle
+    noise(d, t, 0.5, { type: 'bandpass', freq: 3200, q: 0.9, attack: 0.04, peak: 0.22 });
+    for (let i = 0; i < 6; i++) noise(d, t + 0.03 + i * 0.06 + Math.random() * 0.03, 0.035, { type: 'highpass', freq: 2500 + Math.random() * 2500, peak: 0.3 + Math.random() * 0.2 });
+  },
   pickupSpark(d, t) {
     [523, 659, 784].forEach((f, i) => tone(d, t + i * 0.07, 1.2, { freq: f, peak: 0.1 }));
   },
@@ -340,8 +345,11 @@ function startAmbience() {
 }
 
 /** 0 = calm, 1 = something is right next to you. */
+let lastTension = -1, lastMuffle = -1;
 export function setTension(v) {
   if (!droneGain) return;
+  if (Math.abs(v - lastTension) < 0.02) return; // called every frame: only re-schedule on a real change
+  lastTension = v;
   droneGain.gain.setTargetAtTime(0.07 + v * 0.22, ctx.currentTime, 0.5);
   if (wind) wind.gain.setTargetAtTime(0.22 - v * 0.1, ctx.currentTime, 0.8);
 }
@@ -349,5 +357,7 @@ export function setTension(v) {
 /** Muffles everything (shutter closed / snuffed). */
 export function setMuffle(v) {
   if (!sfxBus) return;
+  if (Math.abs(v - lastMuffle) < 0.02) return;
+  lastMuffle = v;
   sfxBus.gain.setTargetAtTime(1 - v * 0.5, ctx.currentTime, 0.2);
 }
