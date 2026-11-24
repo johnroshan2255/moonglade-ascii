@@ -163,7 +163,7 @@ export class VeilMother extends Monster {
       const de = dist(this.x, this.z, ev.x, ev.z);
       if (de > ev.r || regionOf(ev.x, ev.z) !== this.region) continue;
       if (this.state === 'smother') continue;
-      if (this.state === 'linger' && this.onPlate >= 0 && de > 5) continue;
+      if (this.state === 'linger' && this.onPlate >= 0 && de > 3) continue;
       this.tx = ev.x; this.tz = ev.z;
       this.set('investigate');
     }
@@ -177,7 +177,7 @@ export class VeilMother extends Monster {
     switch (this.state) {
       case 'idle':
         if (this.t > 5 || dist(this.x, this.z, this.tx, this.tz) < 0.3) {
-          const a = Math.random() * Math.PI * 2, r = Math.random() * 8;
+          const a = Math.random() * Math.PI * 2, r = Math.random() * 6;
           this.tx = this.home.x + Math.cos(a) * r; this.tz = this.home.z + Math.sin(a) * r;
           this.t = 0;
         }
@@ -188,12 +188,14 @@ export class VeilMother extends Monster {
         if (left < 0.4) {
           const plate = plateFree(this);
           this.onPlate = plate;
-          this.lingerFor = plate >= 0 ? 20 : 3;
+          this.lingerFor = plate >= 0 ? 30 : 3;
           this.set('linger');
         }
         break;
       }
       case 'linger':
+        // while both plates are held the arch is up: neither leaves until the pilgrim is through
+        if (this.onPlate >= 0 && g.archHeld) this.t = Math.min(this.t, this.lingerFor - 6);
         if (this.t > this.lingerFor) { this.onPlate = -1; this.set('idle'); }
         break;
       case 'hunt':
@@ -604,7 +606,7 @@ export class BellWarden extends Monster {
         break;
       }
       case 'listen':
-        if (this.t > 6) { this.ang = Math.atan2(this.z - this.centre.z, this.x - this.centre.x); this.set('patrol'); }
+        if (this.t > 11) { this.ang = Math.atan2(this.z - this.centre.z, this.x - this.centre.x); this.set('patrol'); }
         break;
     }
     // leash to the plaza

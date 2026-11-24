@@ -121,7 +121,7 @@ export const STONES = [
     id: 'plates', x: 7.5, z: -13, title: 'Scratched Beneath',
     body: [
       'Someone has scratched more under the first note, in a shaking hand:',
-      'They do not wait forever. Twenty heartbeats, perhaps. Call the second one quickly. If one wanders off, call her back.',
+      'They do not wait forever: half a minute, perhaps. Call the second one before the first gives up. Once both stand, they hold the arch until you are through.',
       'If no one comes, she may have drifted too far. Strike the iron again, or throw a sound at a stone nearer to her to walk her closer first.',
       'If she sees your flame, she leaves the plate and comes for you. Hold the shutter until she gives up.',
     ],

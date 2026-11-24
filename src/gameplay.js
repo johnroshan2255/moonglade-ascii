@@ -16,7 +16,7 @@ const ONCE_LINES = {
   chimeHint: 'Low to high. Count the notches cut into each post.',
   followEmber: 'Your ember knows the way. Follow its spark.',
   stillWorks: 'It cannot see you when you are still.',
-  mothFirst: 'A moth drinks your flame. Sprint, or switch to Scorched Sight.',
+  mothFirst: 'A moth drinks your flame. Sprint, or shutter the lantern and let it flare.',
 };
 
 export class Gameplay {
@@ -74,7 +74,7 @@ export class Gameplay {
     this.g = {
       player: player.pos, lantern: { x: 0, y: 0, z: 0 }, events: this.events,
       speed: 0, still: 0, lightOpen: true, lightRadius: 7, time: 0, tension: 0,
-      latched: 0, shock: false, sprint: 0, slow: 1,
+      latched: 0, shock: false, sprint: 0, slow: 1, archHeld: false,
       hurt: (a, why) => this.hurt(a, why),
       kill: (why) => this.kill(why),
       ring: (x, z, max, a) => this.ring(x, z, max, a, 7),
@@ -231,7 +231,7 @@ export class Gameplay {
       mire: ['She rises to light and noise in the water.', `In the lake: ${SH}, crank a little, then stop and stay still until the water calms.`],
       veil: ['The tall ones smother any light they see.', `${SH} to hide from them, or ${ST} at a stone to send them away.`],
       warden: ['The bell-headed one is blind. It hears your steps.', `Sneak (${t ? 'tilt the stick lightly' : 'hold C'}), and ${ST} at the fallen bell to lure it away.`],
-      moth: ['A moth drank the flame.', 'Sprint, or switch to Scorched Sight, to shake it off.'],
+      moth: ['A moth drank the flame.', `Sprint, or ${SH} for a moment and let go: the flare shakes it off.`],
       sun: ['The white light burns the ember.', 'Keep out of the pale shafts of light.'],
     };
     const lines = A[why];
@@ -307,7 +307,7 @@ export class Gameplay {
     const metal = t.kind === 'metal' || t.kind === 'bell';
     sfx.play(t.kind === 'bell' ? 'toll' : metal ? 'staffMetal' : 'staff', t, { vol: 1.1, maxDist: 50 });
     sfx.play('staff', p, { vol: 0.25 });
-    this.sound(t.x, t.z, t.kind === 'bell' ? 30 : 16, 'staff');
+    this.sound(t.x, t.z, t.kind === 'bell' ? 30 : t.kind === 'metal' ? 24 : 16, 'staff');
   }
 
   hitChime(c) {
@@ -658,20 +658,26 @@ export class Gameplay {
       pressed += pl.pressed;
       if (dist(pl.x, pl.z, p.x, p.z) < 6) this.say('plateHint');
     }
-    if (pressed === 2 || this.s.arch) this.archHold = 2.5; else this.archHold -= dt;
-    const want = this.archHold > 0 || this.s.arch && dist(p.x, p.z, LAYOUT.wallC.archX, LAYOUT.wallC.z) > 30 ? 1 : 0;
+    this.g.archHeld = pressed === 2 && !this.s.arch;
     const a = pr.arch;
+    // never drop the arch on the pilgrim: while they stand in the gateway it stays up
+    const W = LAYOUT.wallC;
+    const inGate = Math.abs(p.x - W.archX) < W.archHalf + 1.2 && Math.abs(p.z - W.z) < 2.6;
+    if (pressed === 2 || this.s.arch || (inGate && a.open > 0.2)) this.archHold = 4; else this.archHold -= dt;
     const prev = a.open;
     a.open += ((this.archHold > 0 ? 1 : 0) - a.open) * Math.min(1, dt * (this.archHold > 0 ? 1.3 : 2.5));
     if (prev < 0.1 && a.open >= 0.1) { this.say('archOpen'); sfx.play('gate', { x: LAYOUT.wallC.archX, z: LAYOUT.wallC.z }, { vol: 0.7 }); }
     a.port.setLocalPosition(0, a.open * 4.2, 0);
     this.world.setWall('C-arch', a.open < 0.75);
-    void want;
     // beacons: all four placed -> ignite, the exit gate rises, the warden charges
     const placed = pr.beacons.filter((b) => b.placed).length;
-    if (placed === 4 && this.ignite < 0) {
-      this.ignite = 0;
-      setTimeout(() => {
+    if (placed === 4 && this.ignite < 0) this.ignite = 0;
+    if (this.ignite >= 0) {
+      const was = this.ignite;
+      this.ignite += dt;
+      // a beat after the 4th ember: the beacons roar, the gate grinds up and the Warden comes
+      // (in the frame, not a timer, so the Warden hears it and a pause holds it back)
+      if (was < 1.2 && this.ignite >= 1.2) {
         for (const b of pr.beacons) { b.lit = true; b.flame.enabled = true; b.coreMat.setParameter('uEmissive', 3); }
         sfx.play('ignite', LAYOUT.shrine, { vol: 1.2, maxDist: 80 });
         sfx.play('gate', LAYOUT.exitGate, { vol: 1.3, maxDist: 90 });
@@ -679,12 +685,11 @@ export class Gameplay {
         this.warden.chargeDelay = 1.3;
         this.sound(LAYOUT.shrine.x, LAYOUT.shrine.z, 40, 'gate');
         this.toast(LINES.beacons, 4);
-      }, 1200);
+      }
     }
-    if (this.ignite >= 0) this.ignite += dt;
     const eg = pr.exitGate;
     const gateWant = this.ignite > 1.2 ? 1 : 0;
-    eg.open += (gateWant - eg.open) * Math.min(1, dt * 0.35);
+    eg.open += (gateWant - eg.open) * Math.min(1, dt * 0.9);
     eg.slab.setLocalPosition(0, eg.open * 6.6, 0);
     const wall = this.world.walls.find((w) => w.id === 'exit');
     wall.on = eg.open < 0.5;
